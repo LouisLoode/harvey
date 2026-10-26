@@ -358,6 +358,48 @@ SIGNAL_CATALOG: list[dict] = [
         "confidence_floor": 0.0,
     },
     {
+        "code": "COMPANY_AGE",
+        "label": "Company age (French registry)",
+        "description": (
+            "Years since the company was registered, from the French company registry "
+            "(SIRENE), for a company whose own site publishes its SIREN, as French law "
+            "requires. 1-5 years is a young company still building its product."
+        ),
+        "category": "profile",
+        "value_type": "num",
+        "collector": "registry",
+        "cost_note": "free (public registry API)",
+        "confidence_floor": 0.0,
+    },
+    {
+        "code": "HEADCOUNT_BAND",
+        "label": "Headcount band (French registry)",
+        "description": (
+            "The registry's band of salaried staff (1–2, 3–5, 6–9, 10–19...), stored as "
+            "the band's lowest figure with its year. Updated once a year by INSEE, so "
+            "a fast-growing startup may be past it."
+        ),
+        "category": "profile",
+        "value_type": "num",
+        "collector": "registry",
+        "cost_note": "free (public registry API)",
+        "confidence_floor": 0.0,
+    },
+    {
+        "code": "NAF_CODE",
+        "label": "Activity code (French registry)",
+        "description": (
+            "The company's registered activity code (NAF/APE, e.g. 62.01Z software "
+            "development, 58.29C software publishing). icp.exclude_naf rules out "
+            "codes you never sell to, such as staffing (78.) or IT consultancies."
+        ),
+        "category": "profile",
+        "value_type": "text",
+        "collector": "registry",
+        "cost_note": "free (public registry API)",
+        "confidence_floor": 0.0,
+    },
+    {
         "code": "ICP_EXCLUDED",
         "label": "Ruled out by your ICP",
         "description": (
@@ -400,13 +442,14 @@ SIGNAL_CATALOG: list[dict] = [
         "code": "REGISTRY_VERIFIED",
         "label": "Confirmed in a public registry",
         "description": (
-            "The person was confirmed in an authoritative public registry "
-            "(licensing board, professional registry). Also filters out "
-            "scraping artifacts — a name that matches nothing usually wasn't a person."
+            "A director on the company's legal record: for a French company whose "
+            "site publishes its SIREN, each president, managing director (DG) or "
+            "gérant the registry names, with their role. They are who decides, "
+            "and Harvey can reach them when the team page names no one."
         ),
         "category": "people",
         "value_type": "text",
-        "collector": "people",
+        "collector": "registry",
         "cost_note": "free (public registry API)",
         "confidence_floor": 0.0,
     },

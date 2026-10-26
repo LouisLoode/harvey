@@ -19,7 +19,7 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 
-from harvey.icp_filter import excluded_by, has_exclusions
+from harvey.icp_filter import excluded_by, has_exclusions, naf_excluded
 from harvey.public_http import public_http_client
 from harvey.startups import funding_text
 
@@ -1152,6 +1152,21 @@ class ProfileCollector:
             return
         add("ROLE_OPEN_DAYS", num=max(0, days), text=oldest.summary(), url=oldest.url or board.page_url)
 
+    async def _registry(self, site: str, home: str, domain: str):
+        """The company's registry record, when its own site publishes its
+        SIREN: the homepage, its link to the legal notice, or (for a French
+        site) the usual legal-notice paths. None otherwise."""
+        from harvey.collectors.registry import LEGAL_PATHS, find_siren, legal_links, looks_french, lookup
+        siren = find_siren(home)
+        if not siren and looks_french(home, domain):
+            for url in legal_links(home, site) + [f"{site}{p}" for p in LEGAL_PATHS]:
+                siren = find_siren(await self._get(url))
+                if siren:
+                    break
+        if not siren:
+            return None
+        return await lookup(self._client, siren)
+
     async def _search_hit(self, company_id: str, code: str) -> bool:
         """Is the latest reading a preset search's hit? (see state.search_hit)"""
         if getattr(self, "state", None) is None:
@@ -1501,6 +1516,35 @@ class ProfileCollector:
                 if verdict is not None:
                     # A team page is rarely complete: likely, not certain.
                     add("NO_TECH_LEADER", num=verdict[0], text=verdict[1], conf=0.7, url=turl)
+
+        # The French registry, when the site publishes its SIREN: age, size,
+        # activity, closure, and the legal directors (who decides).
+        from harvey.collectors.registry import REGISTRY_SIGNALS, annuaire_url
+        naf_rules = getattr(getattr(self, "icp", None), "exclude_naf", None)
+        if any(self.wants(c) for c in REGISTRY_SIGNALS) or (naf_rules and self.wants("ICP_EXCLUDED")):
+            try:
+                record = await self._registry(site, home, domain)
+            except Exception as e:
+                logger.info(f"profile: {domain} registry unread: {type(e).__name__}: {e}")
+                record = None
+            if record is not None:
+                where = annuaire_url(record.siren)
+                age = record.age_years()
+                if age is not None:
+                    add("COMPANY_AGE", num=age, text=record.created, url=where)
+                if record.headcount:
+                    label, lowest = record.headcount
+                    year = f" ({record.headcount_year})" if record.headcount_year else ""
+                    add("HEADCOUNT_BAND", num=lowest, text=label + year, url=where)
+                if record.naf:
+                    add("NAF_CODE", text=record.naf, url=where)
+                for director in record.directors:
+                    add("REGISTRY_VERIFIED", text=director.label, url=where)
+                if record.closed:
+                    excluded.append("the registry says it has closed")
+                naf_hit = naf_excluded(getattr(self, "icp", None), record.naf)
+                if naf_hit:
+                    excluded.append(f"its activity code {record.naf} is under {naf_hit}")
 
         # Written either way, so a changed exclusion list takes effect on the
         # next profile instead of an old "excluded" lasting forever.

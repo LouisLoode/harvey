@@ -688,6 +688,7 @@ class Scout:
                 company_name=company.get("name") or self._domain_to_name(domain),
                 industry=company.get("industry") or default_industry,
                 source="known_company_backfill",
+                known_people=await self._registry_directors(company["id"]),
             )
 
             # Mark it checked regardless of outcome, so a company with no
@@ -1598,13 +1599,21 @@ Respond ONLY with the JSON array."""
         industry: str,
         signal_note: str = "",
         source: str = "company_website",
+        known_people: list[dict] | None = None,
     ) -> list[Prospect]:
-        """Team-page scrape → ICP-matched, email-resolved, deduped prospects."""
+        """Team-page scrape → ICP-matched, email-resolved, deduped prospects.
+
+        ``known_people`` are people already on record for the company (its
+        legal directors, from the registry): merged with the team page, so
+        they are ranked, ICP-matched and resolved the same way."""
         try:
             team_members = await self._scrape_team_page(domain)
         except Exception as e:
             logger.debug(f"Team scrape failed for {domain}: {e}")
-            return []
+            if not known_people:
+                return []
+            team_members = []
+        team_members = _merge_known_people(team_members, known_people or [])
 
         contacts: list[Prospect] = []
         named_on_site = False
@@ -1669,6 +1678,33 @@ Respond ONLY with the JSON array."""
             if inbox:
                 contacts.append(inbox)
         return contacts
+
+    async def _registry_directors(self, company_id: str) -> list[dict]:
+        """The company's legal directors from its latest registry reading
+        (REGISTRY_VERIFIED, written by the profile stage), as team members."""
+        try:
+            rows = await self.state.get_observations(
+                company_id=company_id, signal_code="REGISTRY_VERIFIED", limit=20)
+        except Exception:
+            return []
+        if not rows:
+            return []
+        # Only the latest reading: a director who has left is not on it.
+        latest = rows[0].get("observed_at")
+        found = []
+        for row in rows:
+            if row.get("observed_at") != latest:
+                continue
+            name, _, role = (row.get("value_text") or "").partition(" — ")
+            split = people_mod.split_person_name(name)
+            if not split:
+                continue
+            found.append({
+                "first_name": split[0], "last_name": split[1], "title": role.strip(),
+                "owner": people_mod.is_owner_title(role), "evidence": "company registry",
+                "evidence_url": row.get("evidence_url") or "",
+            })
+        return found
 
     async def _observe_likely_owner(self, company_id: str, member: dict):
         """Record LIKELY_OWNER for a company — only when the user confirmed
@@ -2163,3 +2199,27 @@ Respond ONLY with the JSON array."""
                 }
 
         return None
+
+
+def _merge_known_people(team_members: list[dict], known: list[dict]) -> list[dict]:
+    """The team page's people plus those on record (registry directors). A
+    director the site also names keeps the site's entry and becomes an owner
+    when the registry says they run the company; the rest are added."""
+    def key(member):
+        return (people_mod.fold(member.get("first_name", "")).lower(),
+                people_mod.fold(member.get("last_name", "")).lower())
+
+    merged = [dict(m) for m in team_members]
+    by_key = {key(m): m for m in merged}
+    for person in known:
+        on_site = by_key.get(key(person))
+        if on_site is not None:
+            on_site["owner"] = bool(on_site.get("owner") or person.get("owner"))
+            on_site["rank"] = max(on_site.get("rank") or 0,
+                                  people_mod.owner_rank(on_site.get("title", ""), on_site["owner"]))
+            continue
+        entry = dict(person)
+        entry["rank"] = people_mod.owner_rank(entry.get("title", ""), bool(entry.get("owner")))
+        merged.append(entry)
+        by_key[key(entry)] = entry
+    return merged
