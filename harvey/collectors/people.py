@@ -20,10 +20,11 @@ Each person comes back as a dict:
 import html as html_lib
 import json
 import re
+import unicodedata
 from urllib.parse import unquote, urljoin, urlparse
 
 from harvey.collectors.profile import (
-    NON_NAME_WORDS, ROLE_HINT, _NOUN_SUFFIX, _reads_like_title, _strip_code,
+    _LO, _UP, NON_NAME_WORDS, ROLE_HINT, _NOUN_SUFFIX, _reads_like_title, _strip_code,
 )
 
 # ── what a name is ───────────────────────────────────────────────────────
@@ -52,6 +53,14 @@ software sports medicine fitness salon spa dental medical clinic insurance finan
 properties inc llc pllc ltd corp co
 coach pastor father mother judge mayor senator governor captain sergeant sheriff officer
 uncle aunt grandpa grandma mom dad memory memoriam late former
+notre nos votre vos équipe equipe accueil propos qui sommes nous contactez mentions
+légales legales recrutement rejoignez rejoindre carrières carrieres offre offres emploi
+emplois actualités actualites presse fondateur fondatrice fondateurs fondatrices
+cofondateur cofondatrice président présidente directeur directrice gérant gérante
+associé associée associés responsable chef société societe entreprise cabinet agence
+groupe conseil découvrir decouvrir savoir voir tous toutes lire suite bienvenue merci
+partenaires partenaire projet projets histoire valeurs métier métiers plateforme
+produit produits tarifs démo nouveau nouvelle
 """.split())
 
 # Particles that sit lower-case inside a surname ("Van de Wal", "de la Cruz").
@@ -61,7 +70,25 @@ _HONORIFIC = re.compile(r"^(?:dr|mr|mrs|ms|miss|prof|rev|hon)\.?\s+", re.I)
 _CREDENTIAL = (r"(?:dds|dmd|md|do|dvm|od|phd|jd|esq|cpa|pe|ra|rn|np|pa|mba|ms|ma|"
                r"facs|fagd|ccc-slp|jr|sr|ii|iii|iv)")
 _CREDENTIAL_TAIL = re.compile(rf"(?:\s*,?\s+{_CREDENTIAL}\.?)+\s*$", re.I)
-_NAME_TOKEN = re.compile(r"^[A-Z][a-z]+(?:[-'’][A-Z]?[a-z]+)*\.?$|^[A-Z]\.$|^[A-Z]$")
+_NAME_TOKEN = re.compile(rf"^[{_UP}][{_LO}]+(?:[-'’][{_UP}]?[{_LO}]+)*\.?$|^[{_UP}]\.$|^[{_UP}]$")
+# Shouted words that are never a surname, however French the page.
+_ACRONYMS = frozenset("hvac llc inc ceo cto coo cfo cmo sas sarl sasu eurl usa hoa dds dmd".split())
+
+
+def fold(text: str) -> str:
+    """"Hélène" → "Helene": accents dropped, for comparing with domains and
+    building email addresses."""
+    return unicodedata.normalize("NFKD", text or "").encode("ascii", "ignore").decode()
+
+
+def upper_surname_ok(token: str) -> bool:
+    """A surname written in capitals, as French sites do ("Claire DUVAL"),
+    rather than an acronym ("HVAC") or a stray initial ("RAY T")."""
+    bare = token.strip(".,'’")
+    letters = bare.replace("-", "").replace("'", "").replace("’", "")
+    return (len(letters) >= 3 and letters.isalpha() and bare.isupper()
+            and bool(re.search(r"[AEIOUYÀ-ÆÈ-ÏÒ-ÖØ-Ü]", bare))
+            and fold(bare).lower() not in _ACRONYMS)
 
 
 def _word_ok(token: str) -> bool:
@@ -90,7 +117,7 @@ def split_person_name(text: str) -> tuple[str, str] | None:
     if any(ch.isdigit() for ch in text) or "@" in text:
         return None
     first = tokens[0]
-    if not re.match(r"^[A-Z][a-z]+(?:[-'’][A-Z]?[a-z]+)*$", first) or not _word_ok(first):
+    if not re.match(rf"^[{_UP}][{_LO}]+(?:[-'’][{_UP}]?[{_LO}]+)*$", first) or not _word_ok(first):
         return None
     rest = tokens[1:]
     # Surname: any particles that start it, then capitalised words.
@@ -103,10 +130,14 @@ def split_person_name(text: str) -> tuple[str, str] | None:
         if not (_NAME_TOKEN.match(t) and (len(t.strip(".")) == 1 or _word_ok(t))):
             return None
     last_word = surname[-1]
-    if not re.match(r"^[A-Z][a-zA-Z]*(?:[-'’][A-Z]?[a-zA-Z]+)*$", last_word) or len(last_word) < 2:
+    if not re.match(rf"^[{_UP}][{_UP}{_LO}]*(?:[-'’][{_UP}]?[{_UP}{_LO}]+)*$", last_word) or len(last_word) < 2:
         return None
-    if last_word.isupper() and len(last_word) > 2:      # "RAY T", "HVAC"
-        return None
+    if last_word.isupper() and len(last_word) > 2:
+        # "Claire DUVAL" is a French surname; "RAY T" and "HVAC" are not.
+        if not upper_surname_ok(last_word):
+            return None
+        last_word = "-".join(p.capitalize() for p in last_word.lower().split("-"))
+        surname = surname[:-1] + [last_word]
     if not _word_ok(last_word):
         return None
     if first.isupper() or any(t.lower() not in _PARTICLES for t in surname[:-1]):
@@ -126,15 +157,23 @@ def is_person_name(text: str) -> bool:
 _OWNER_FAMILY = ("owner", "co-owner", "founder", "co-founder", "cofounder", "president",
                  "ceo", "chief executive", "chief executive officer", "principal",
                  "proprietor", "managing partner", "founding partner", "managing member",
-                 "owner/operator", "owner-operator")
+                 "owner/operator", "owner-operator",
+                 # French: the founder, the legal head of an SAS (président) or
+                 # SARL (gérant), and the DG who runs it.
+                 "fondateur", "fondatrice", "co-fondateur", "co-fondatrice", "cofondateur",
+                 "cofondatrice", "président", "présidente", "pdg", "gérant", "gérante",
+                 "directeur général", "directrice générale", "dirigeant", "dirigeante")
 _OWNER_TITLE = re.compile(
     r"\b(?:co-?owner|owner|co-?founder|founder|proprietor|ceo|chief executive(?: officer)?|"
     r"president|managing (?:partner|member)|founding (?:partner|attorney|dentist|doctor)|"
-    r"principal(?! (?:designer|engineer|consultant|architect|associate|scientist|developer)))\b", re.I)
+    r"principal(?! (?:designer|engineer|consultant|architect|associate|scientist|developer))|"
+    r"co-?fondat(?:eur|rice)|fondat(?:eur|rice)|présidente?|pdg|gérante?|"
+    r"directeur général|directrice générale|dirigeante?)\b", re.I)
 # Words that make an owner title about someone else ("Assistant to the CEO")
 # or a rank below it ("Vice President", "VP").
 _SUBORDINATE = re.compile(r"\b(?:vice[- ]president|vp|svp|evp|assistant(?: to)?|"
-                          r"executive assistant|to the|deputy|associate|aide)\b", re.I)
+                          r"executive assistant|to the|deputy|associate|aide|"
+                          r"vice[- ]présidente?|adjointe?|assistante?)\b", re.I)
 _PROFESSIONAL = re.compile(
     r"\b(?:dds|dmd|md|dvm|od|esq|cpa|attorney|lawyer|dentist|orthodontist|"
     r"periodontist|endodontist|doctor|dr|physician|veterinarian|optometrist|"
@@ -205,7 +244,7 @@ def owner_rank(title: str, owner: bool = False) -> int:
         return 80
     if re.search(r"\b(?:general manager|managing director)\b", low):
         return 60
-    if re.search(r"\b(?:director|manager|head of|chief)\b", low) and not _SUBORDINATE.search(low):
+    if re.search(r"\b(?:director|manager|head of|chief|directeur|directrice|responsable)\b", low) and not _SUBORDINATE.search(low):
         return 40
     return 10
 
@@ -255,7 +294,7 @@ def surname_on_the_door(last_name: str, domain: str, site_name: str = "") -> boo
     """The person's surname is in the business name: "Ashby & Kerr",
     hollisfamilydental.test. Owners name their practices after themselves."""
     blob = _business_blob(domain, site_name)
-    for part in re.findall(r"[A-Za-z]+", last_name or ""):
+    for part in re.findall(r"[A-Za-z]+", fold(last_name)):
         p = part.lower()
         if len(p) >= 4 and p not in _GENERIC_BUSINESS_WORDS and p in blob:
             return True
@@ -269,10 +308,16 @@ _TITLE_ORG = re.compile(
     r"(?i:\b(?:owner|founder|co-?founder|ceo|cto|coo|cmo|president|principal|partner|director)"
     r"\b(?:\s*(?:,|&|and)\s*\w+)*?\s*(?:,|\bat\b|\bof\b|@|\s))\s*"
     r"((?:the\s+)?[A-Z][\w&.'’-]*(?:\s+(?:[A-Z][\w&.'’-]*|&|and|of))*)")
+# French titles name another organisation only through "chez" or "@":
+# "Directeur Technique" and "Président Directeur Général" are one title.
+_TITLE_ORG_FR = re.compile(
+    r"(?i:\b(?:co-?fondat(?:eur|rice)|fondat(?:eur|rice)|présidente?|pdg|gérante?|directeur|"
+    r"directrice|ceo|cto)\b[^,@]{0,30}?\s*(?:\bchez\b|@)\s*)"
+    r"([A-Z][\w&.'’-]*(?:\s+(?:[A-Z][\w&.'’-]*|&))*)")
 
 
 def title_names_other_org(title: str, domain: str, site_name: str = "") -> bool:
-    for m in _TITLE_ORG.finditer(title or ""):
+    for m in (*_TITLE_ORG.finditer(title or ""), *_TITLE_ORG_FR.finditer(title or "")):
         org = m.group(1).strip()
         if re.fullmatch(r"(?i)(?:and\s+)?(?:owner|founder|co-?founder|ceo|cto|coo|cmo|president|"
                         r"principal|partner|director|chief[\w\s]*|operations|executive officer)", org):
@@ -500,17 +545,21 @@ def people_from_schema(html: str, url: str = "") -> list[dict]:
 
 # ── owners named in prose ────────────────────────────────────────────────
 
-_CAP = r"[A-Z][a-z]+(?:[-'’][A-Z]?[a-z]+)*"
-_NAME_RE = (rf"(?:Dr\.?\s+)?(?P<name>{_CAP}(?:\s+[A-Z]\.)?(?:\s+(?:{'|'.join(sorted(_PARTICLES))}))*"
+_CAP = rf"[{_UP}][{_LO}]+(?:[-'’][{_UP}]?[{_LO}]+)*"
+_NAME_RE = (rf"(?:Dr\.?\s+)?(?P<name>{_CAP}(?:\s+[{_UP}]\.)?(?:\s+(?:{'|'.join(sorted(_PARTICLES))}))*"
             rf"\s+{_CAP}(?:\s+{_CAP})?)")
 _OWNER_WORD = (r"(?P<title>(?i:co-?owner|owner|co-?founder|founder|proprietor|president|ceo|"
-               r"principal|managing partner|founding partner|founding attorney|partners?))")
+               r"principal|managing partner|founding partner|founding attorney|partners?|"
+               r"co-?fondat(?:eur|rice)|fondat(?:eur|rice)|présidente?|gérante?|pdg))")
 _ADJ = r"(?:(?:our|the|its|current|proud|longtime|second[- ]generation|third[- ]generation|" \
        r"original|today'?s?|new)\s+)*"
 _PROSE = (
     # "founded by (attorney) Colin Garrity", "started by Dr. Ann Lee"
     (re.compile(rf"(?i:\b(?:founded|started|established|launched|opened|created)\s+(?:in\s+\d{{4}}\s+)?by)\s+"
                 rf"(?:(?i:attorney|dentist|our\s+founder|owner|president)\s+)?{_NAME_RE}"), "Founder"),
+    # "fondée en 2019 par Claire Duval", "créée par Hugo Marin"
+    (re.compile(rf"(?i:\b(?:fondée?s?|créée?s?|lancée?s?)\s+(?:en\s+\d{{4}}\s+)?par)\s+{_NAME_RE}"),
+     "Fondateur"),
     # "owned and operated by Gary Pruitt"
     (re.compile(rf"(?i:\b(?:owned\s+and\s+operated|owned|operated)\s+(?:today\s+)?by)\s+"
                 rf"(?!(?i:president|owner|ceo|founder)\b){_NAME_RE}"), "Owner"),

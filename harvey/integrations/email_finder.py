@@ -24,6 +24,7 @@ import logging
 import os
 import random
 import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
@@ -99,7 +100,10 @@ def _clean_domain(domain: str) -> str:
 
 
 def _clean_name_part(value: str) -> str:
-    return re.sub(r"[^a-z]", "", (value or "").lower())
+    """"François" → "francois": accents become their letter (addresses
+    are ASCII), everything else that isn't a-z goes."""
+    ascii_only = unicodedata.normalize("NFKD", value or "").encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z]", "", ascii_only.lower())
 
 
 def build_email(pattern: str, first: str, last: str, domain: str) -> str:

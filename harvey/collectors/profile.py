@@ -22,7 +22,7 @@ import httpx
 from harvey.public_http import public_http_client
 from harvey.startups import funding_text
 
-from harvey.collectors.ats import detect_board, matching_roles, read_board, role_keywords
+from harvey.collectors.ats import Posting, detect_board, matching_roles, read_board, role_keywords
 
 from harvey.collectors.discover import (
     name_from_domain, name_matches_domain, site_name_from_html,
@@ -150,22 +150,37 @@ hoa hoas condo condos association associations board boards community
 communities management property properties owners residents customer care
 scope alignment implementation consistency communication process driven
 focused structured
+équipe equipe notre nos accueil propos mentions légales legales recrutement
+carrières carrieres offres emploi actualités actualites presse tarifs plateforme
 """.split())
+
+# Name letters: ASCII plus the accented Latin letters French, Spanish and
+# German names carry ("Hélène", "Éric", "Müller"). re has no \p{Lu}.
+_UP = "A-ZÀ-ÖØ-ÞŒ"
+_LO = "a-zß-öø-ÿœ"
 
 # Tokens that are words, not names, whatever the vertical: abstract nouns
 # ("Scope Alignment", "Board Communication") and shouted acronyms ("HOA").
 _NOUN_SUFFIX = re.compile(r"(tion|tions|sion|sions|ness)$")
 
 
-def _is_name_token(token: str) -> bool:
+def _is_name_token(token: str, surname: bool = False) -> bool:
+    """``surname``: the last word of a name, which French sites write in
+    capitals ("Claire DUVAL"); anywhere else a shouted word is an acronym."""
+    from harvey.collectors.people import upper_surname_ok
     for part in token.split("-"):
         bare = part.strip(".,'")
         low = bare.lower()
         if low in NON_NAME_WORDS or _NOUN_SUFFIX.search(low):
             return False
-        if len(bare) >= 3 and bare.isupper():
+        if len(bare) >= 3 and bare.isupper() and not (surname and upper_surname_ok(bare)):
             return False
     return True
+
+
+def _is_name(tokens: list[str]) -> bool:
+    return bool(tokens) and all(_is_name_token(t, surname=i == len(tokens) - 1 and i > 0)
+                                for i, t in enumerate(tokens))
 
 
 # Block-level tags separate a name, its title, and the bio that follows; the
@@ -203,6 +218,9 @@ DECISION_MAKER_TITLES = (
     "office manager", "marketing director", "marketing manager",
     "director of marketing", "vice president", "vp ", "managing director",
     "chief", "director",
+    # French ("fondateur" also covers co-fondateur and cofondateur)
+    "fondateur", "fondatrice", "président", "gérant", "pdg", "dirigeant",
+    "directeur", "directrice",
 )
 
 
@@ -213,7 +231,10 @@ ROLE_HINT = re.compile(
     r"office|project|account|service|technician|installer|inspector|"
     r"vice president|vp|executive|lead|head of|chief|proprietor|attorney|lawyer|"
     r"dentist|orthodontist|periodontist|endodontist|hygienist|dds|dmd|esq|cpa|"
-    r"administrator|paralegal|associate|co-?owner|co-?founder)\b", re.I)
+    r"administrator|paralegal|associate|co-?owner|co-?founder|"
+    r"co-?fondat(?:eur|rice)s?|fondat(?:eur|rice)s?|présidente?|pdg|dg|gérante?|"
+    r"directeur|directrice|dirigeante?|responsable|associée?|ingénieure?|"
+    r"développeu(?:r|se)|chef de projet)\b", re.I)
 
 
 def title_looks_like_role(text: str) -> bool:
@@ -1002,22 +1023,32 @@ class ProfileCollector:
         if board and not chtml:
             curl, chtml = await self._careers_page(site, home, domain)
         if chtml and self.wants("HIRING_ROLE"):
+            keywords = getattr(self, "role_keywords", None) or []
             roles = []
             for m in re.finditer(
                 r"(?is)<(h[2-5]|a|li)[^>]*>\s*([^<]{6,70})\s*</\1>", _strip_code(chtml)
             ):
-                t = re.sub(r"\s+", " ", m.group(2)).strip()
-                if re.search(r"\b(hiring|apply|position|opening|wanted|"
-                             r"technician|installer|sales|manager|foreman|"
-                             r"estimator|crew|representative|"
-                             r"recrute|postuler|poste|développeur|développeuse|ingénieur|"
-                             r"[hf]\s?/\s?[hf])\b", t, re.I):
-                    if t.lower() not in [r.lower() for r in roles]:
-                        roles.append(t)
+                t = html_unescape(re.sub(r"\s+", " ", m.group(2))).strip()
+                if keywords:
+                    # Only the roles you listed: the rest of a careers page's
+                    # headings are "Ready to apply?", perks and other teams.
+                    keep = bool(matching_roles([Posting(title=t)], keywords))
+                else:
+                    keep = bool(re.search(r"\b(hiring|apply|position|opening|wanted|"
+                                          r"technician|installer|sales|manager|foreman|"
+                                          r"estimator|crew|representative|"
+                                          r"recrute|postuler|poste|développeur|développeuse|ingénieur|"
+                                          r"[hf]\s?/\s?[hf])\b", t, re.I))
+                if keep and t.lower() not in [r.lower() for r in roles]:
+                    roles.append(t)
                 if len(roles) >= 3:
                     break
             for r in roles:
                 add("HIRING_ROLE", text=r, url=curl)
+            if keywords and not roles:
+                # A careers page with none of your roles: say so, so an old
+                # row stops being the current view (as for a job board).
+                add("HIRING_ROLE", num=0, url=curl)
     async def _search_hit(self, company_id: str, code: str) -> bool:
         """Is the latest reading a preset search's hit? (see state.search_hit)"""
         if getattr(self, "state", None) is None:
@@ -1125,8 +1156,8 @@ class ProfileCollector:
         # Tag names match any case; the NAME must not — under a blanket (?i)
         # "Customer care" passes the Firstname Lastname capitalisation test.
         for m in re.finditer(
-            r"(?s)<((?i:h[1-5]|strong|b))[^>]*>\s*((?:Dr\.?\s+)?[A-Z][a-z'\-]+(?:\s+[A-Z]\.?)?"
-            r"(?:\s+(?:[A-Z][a-zA-Z'\-]+|van|von|de|der|del|la|le|di|da)){1,3}"
+            rf"(?s)<((?i:h[1-5]|strong|b))[^>]*>\s*((?:Dr\.?\s+)?[{_UP}][{_LO}'\-]+(?:\s+[{_UP}]\.?)?"
+            rf"(?:\s+(?:[{_UP}][{_UP}{_LO}'\-]+|van|von|de|der|del|la|le|di|da|du)){{1,3}}"
             r"(?:,?\s+(?:DDS|DMD|MD|Esq\.?|CPA|Jr\.?|Sr\.?|II|III))?)\s*</(?i:\1)>(?=(.{0,220}))",
             text_html
         ):
@@ -1149,7 +1180,7 @@ class ProfileCollector:
             # Reject headings that merely LOOK like names. Every token must be
             # plausibly a name part; one business word disqualifies the whole
             # match ("Request Service", "Baker History", "HOA Boards").
-            if not all(_is_name_token(t) for t in name.split()):
+            if not _is_name(name.split()):
                 continue
             split = split_person_name(name)
             if not split:
@@ -1164,7 +1195,7 @@ class ProfileCollector:
             add(split[0], split[1], title, re.sub(r"(?i)^dr\.?\s+", "", name))
         # Name and title on consecutive lines, or "Name, Title" on one.
         for p in people_from_lines(html, domain, site_name):
-            if all(_is_name_token(t) for t in p["first_name"].split() + p["last_name"].split()):
+            if _is_name(p["first_name"].split() + p["last_name"].split()):
                 add(p["first_name"], p["last_name"], p["title"], p["full_name"])
         return people
 
