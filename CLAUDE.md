@@ -175,7 +175,7 @@ Ask the user these questions and build `harvey.yaml` and `skills/product_knowled
 
 ### Step 4: Confirm Signals
 
-Harvey ships a catalog of 29 signals it knows how to collect, all **proposed** and
+Harvey ships a catalog of 37 signals it knows how to collect, all **proposed** and
 none active. Nothing is prospected against until the user confirms them.
 
 Send them to `harvey dashboard` → **Signals**, where each one shows a
@@ -293,6 +293,9 @@ Users will come back with questions and tasks. Common ones:
 - **"The emails aren't good"** → Edit `skills/email_frameworks.md` and `prompts/writer.md`. Show them the current rules and help them adjust.
 - **"Harvey isn't finding the right people"** → Check the ICP config in `harvey.yaml`. Adjust industries, titles, company_size, geography.
 - **"I want to change what Harvey says"** → Skills are in `skills/`, prompts are in `prompts/`. Both are plain markdown files. Edit them directly.
+- **"Leave out competitors / recruiters / funds"** → `icp.exclude_keywords` (words in the company's own name, title or description) and `icp.exclude_naf` (French activity-code prefixes, from the registry). Excluded companies are never stored or contacted.
+- **"Write to French companies in French"** → already on: `channels.email.language: auto` writes French to companies the French registry knows, on a .fr domain, or located in France or a French-speaking region; `en` / `fr` force one language. The French footer is `compliance.opt_out_line_fr`.
+- **"Only run Harvey at night and on weekends"** → `usage.quiet_hours` with `days`: e.g. start `08:00`, end `20:00`, `days: [mon, tue, wed, thu, fri]`. Quiet hours pause prospecting, writing and replies (sending through a recipient-time-zone `send_window` still happens). `brain.model: claude-sonnet-5-5` also uses far less of the plan than the CLI's default model.
 - **"Train Harvey on a different product"** → `harvey train <new-url>`
 - **"How do I see the database?"** → It's at `data/harvey.db`. They can open it with any SQLite tool, or ask you to query it.
 - **"I just want the prospect list"** → `harvey export` writes a sequencer-ready CSV (verified/risky emails only; `--all` for everything). Also available as Export buttons on the dashboard's Contacts tab. Harvey is valuable purely as a list-builder even if the user never lets it send.

@@ -9,6 +9,33 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **Signals for selling to a company that needs a tech lead.**
+  `ROLE_OPEN_DAYS` (how long the oldest of your `hiring_signals` roles has
+  been open on the job board their site links to), `REMOTE_ROLE`,
+  `STACK_MATCH` (which `icp.stack_keywords` their job posts, careers page or
+  site framework mention; job posts are now read with their descriptions
+  where the feed has one) and `NO_TECH_LEADER` (founders on the team page,
+  nobody technical). The writer, the reply handler and Outbox review see them.
+  `TECH_STACK` recognises Next.js and Nuxt.
+- **The French company registry.** When a company's own site publishes its
+  SIREN, the profile stage asks `recherche-entreprises.api.gouv.fr` about that
+  exact number (one free request, no key): `COMPANY_AGE`, `HEADCOUNT_BAND`,
+  `NAF_CODE`, and `REGISTRY_VERIFIED` for each president, DG or gérant. Only
+  people in a director's role, only public records, never birth dates. The
+  contacts backfill can reach a director when the team page names no one.
+- **ICP exclusions.** `icp.exclude_keywords` (whole words, case and accents
+  ignored) and `icp.exclude_naf` (activity-code prefixes) rule out
+  competitors and non-buyers: discovery doesn't store them, profiling records
+  `ICP_EXCLUDED`, and the contacts backfill skips them.
+- **French emails to French companies.** `channels.email.language` (`auto`
+  by default, or `en` / `fr`): French when the registry knows the company,
+  its domain is .fr or it is located in France or a French-speaking region.
+  Batches split by language, the footer uses `compliance.opt_out_line_fr`,
+  and French opt-outs ("non merci", "désinscription") are honoured.
+- **Quiet hours on chosen days.** `usage.quiet_hours.days` (every day by
+  default). Quiet 08:00-20:00 on `[mon, tue, wed, thu, fri]` keeps Harvey's
+  work, and its Claude use, to nights and weekends.
+
 - **French startups.** `icp.search_languages: [fr]` makes the `funding` and
   `hiring` presets search Google France in French ("lève 2 M€", "levée de
   fonds", "recrutement"), on Serper (`gl`/`hl`) and DataForSEO SERP (France,
@@ -188,6 +215,17 @@ minor versions can still change behaviour.
 
 ### Changed
 
+- **The contacts backfill starts with buying intent.** Companies showing the
+  most intent signals (hiring, a role open for weeks, no tech lead, your
+  stack, remote, funding, an accelerator, a registry record) are visited
+  first, then the rest rotate as before.
+- **French team pages are read.** Accented names (Hélène, Éric), surnames in
+  capitals (Claire DUVAL) and French titles (fondateur, président, gérant,
+  directeur général, PDG) were rejected; they are now people, owners and
+  roles, and "fondée par" sentences name a founder. Team pages are also
+  looked for at `/equipe`, `/a-propos` and `/qui-sommes-nous`. Email local
+  parts transliterate accents (François → francois) instead of dropping them.
+
 - **Setup comes first on Today.** Until setup is finished, the checklist sits at
   the top of the Today page as a "Finish setting up Harvey" card, with the next
   step highlighted, instead of at the bottom of the side column.
@@ -220,6 +258,11 @@ minor versions can still change behaviour.
   Gmail's history marker has expired, and once a day as a backstop.
 
 ### Fixed
+
+- **`HIRING_ROLE` from a careers page kept any heading.** Without a job
+  board, Harvey recorded headings such as "Ready to apply?" or a sales role
+  as hiring intent. It now keeps only your `hiring_signals` roles (entities
+  decoded) and records 0 when the page lists none.
 
 - **Startup presets on Serper's free tier.** Serper refuses a search with
   operators (`site:`, `after:`) past 10 results on a free key ("Query pattern
