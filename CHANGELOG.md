@@ -9,6 +9,18 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **First emails for selling a service.** `writer.first_email: offer` lets
+  the first email say who is writing and what they do for the reader, tied
+  to one observation and ending on a concrete low-effort offer (the default,
+  `observation`, is unchanged). `skills/voice_samples.md` (kept out of git)
+  holds emails you wrote; the writer matches their voice. `writer.critique`
+  drafts three first emails and keeps the one a review call rates best.
+- **`channels.email.contacts_per_company`.** Cold email to at most that many
+  people per company at a time, the most senior first (0, no limit, by
+  default).
+- **`SITE_LANGUAGE`.** The language a homepage declares, so a French site
+  gets French emails even when nothing else says where the company is.
+
 - **Signals for selling to a company that needs a tech lead.**
   `ROLE_OPEN_DAYS` (how long the oldest of your `hiring_signals` roles has
   been open on the job board their site links to), `REMOTE_ROLE`,
@@ -258,6 +270,17 @@ minor versions can still change behaviour.
   Gmail's history marker has expired, and once a day as a backstop.
 
 ### Fixed
+
+- **The writer was given a search string as the company's industry.** A
+  discovery preset stores its search as the industry, and it reached the
+  writer's facts and campaign names as such ('B2B SaaS ("we raised" OR
+  ...) -site:...'). The writer now reads the industry inside it.
+- **French first email, English follow-ups.** A company with no location
+  and no .fr domain was batched as English while its first email came out in
+  French; the site's declared language and the company's description now
+  count when picking the language.
+- **Emails that talked down to the reader.** The writer prompt now forbids
+  implying the reader can't do their job.
 
 - **`HIRING_ROLE` from a careers page kept any heading.** Without a job
   board, Harvey recorded headings such as "Ready to apply?" or a sales role

@@ -65,6 +65,8 @@ channels:
     #                                  # an email linking elsewhere waits for you
     # language: auto            # auto: French to French companies, English to
     #                           # everyone else | en | fr
+    # contacts_per_company: 1   # cold email to this many people per company at
+    #                           # a time, most senior first (0 = no limit)
     send_to_risky: false        # also send to catch-all domains (off = safest)
     max_bounce_rate: 0.05       # pause all sending if bounces exceed this
     # New sending domain? Set start_date to the day your warmup service went
@@ -141,3 +143,13 @@ compliance:
     sender_country: ""          # GB or US: where your business is based
     address_source: "unknown"   # published | bought | scraped | given | unknown
     prospect_country: ""        # optional, e.g. US if all your prospects are in one country
+
+# How Harvey writes. All optional.
+# writer:
+#   first_email: observation    # observation: an observation and a question, no
+#                               # pitch | offer: for a service, also says who you
+#                               # are and what you do, and offers a next step
+#   critique: false             # true: draft three first emails, keep the one a
+#                               # review call rates best (one more call per draft)
+#   humanizer: false
+# Your own emails in skills/voice_samples.md make the writer match your voice.

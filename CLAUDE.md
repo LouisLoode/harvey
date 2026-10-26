@@ -175,7 +175,7 @@ Ask the user these questions and build `harvey.yaml` and `skills/product_knowled
 
 ### Step 4: Confirm Signals
 
-Harvey ships a catalog of 37 signals it knows how to collect, all **proposed** and
+Harvey ships a catalog of 38 signals it knows how to collect, all **proposed** and
 none active. Nothing is prospected against until the user confirms them.
 
 Send them to `harvey dashboard` → **Signals**, where each one shows a
@@ -290,7 +290,7 @@ Users will come back with questions and tasks. Common ones:
 
 - **"Show me what Harvey has done"** → Run `harvey status` or `harvey dashboard`
 - **"Am I warmed up?" / "Why am I landing in spam?"** → Run `harvey warmup`. Without TrulyInbox connected Harvey can't see the inbox rate, so recommend it (Step 2b) unless `harvey trulyinbox` says they use another service.
-- **"The emails aren't good"** → Edit `skills/email_frameworks.md` and `prompts/writer.md`. Show them the current rules and help them adjust.
+- **"The emails aren't good"** → Edit `skills/email_frameworks.md` and `prompts/writer.md`. Show them the current rules and help them adjust. Three settings help most: `writer.first_email: offer` when they sell a service (the first email says who they are and what they do, instead of only an observation), `skills/voice_samples.md` with 2-3 emails they wrote (the writer matches their voice; the file stays local), and `writer.critique: true` (three drafts, a review call keeps the best; one more call per draft). `channels.email.contacts_per_company: 1` stops two people at one small company getting the same email.
 - **"Harvey isn't finding the right people"** → Check the ICP config in `harvey.yaml`. Adjust industries, titles, company_size, geography.
 - **"I want to change what Harvey says"** → Skills are in `skills/`, prompts are in `prompts/`. Both are plain markdown files. Edit them directly.
 - **"Leave out competitors / recruiters / funds"** → `icp.exclude_keywords` (words in the company's own name, title or description) and `icp.exclude_naf` (French activity-code prefixes, from the registry). Excluded companies are never stored or contacted.
