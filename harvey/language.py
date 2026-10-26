@@ -2,10 +2,12 @@
 
 ``channels.email.language`` is "auto" (the default), "en" or "fr". On auto,
 a company is written to in French when:
-  - the French company registry knows it (its site published a SIREN);
   - its domain is .fr;
-  - or its location is in France or a French-speaking region
-    (discovery stores the place it searched, e.g. "Toulouse, France").
+  - its location is in France or a French-speaking region
+    (discovery stores the place it searched, e.g. "Toulouse, France");
+  - the French company registry knows it (its site published a SIREN);
+  - its site declares French (SITE_LANGUAGE, <html lang="fr">);
+  - or what it says about itself (its description) is in French.
 Everyone else gets English, as before.
 
 ``text_language`` reads which language an email already is in, so its
@@ -53,7 +55,7 @@ def configured_language(config) -> str:
 
 
 async def company_language(state, config, company_id: str = "", domain: str = "",
-                           location: str = "") -> str:
+                           location: str = "", description: str = "") -> str:
     """"fr" or "en" for one company (see the module docstring)."""
     chosen = configured_language(config)
     if chosen != "auto":
@@ -64,12 +66,18 @@ async def company_language(state, config, company_id: str = "", domain: str = ""
         return "fr"
     lookup = getattr(state, "get_observations", None)
     if company_id and lookup is not None:
-        for code in _REGISTRY_CODES:
-            try:
+        try:
+            for code in _REGISTRY_CODES:
                 if await lookup(company_id=company_id, signal_code=code, latest_only=True, limit=1):
                     return "fr"
-            except Exception:
-                break
+            declared = await lookup(company_id=company_id, signal_code="SITE_LANGUAGE",
+                                    latest_only=True, limit=1)
+            if declared and (declared[0].get("value_text") or "").lower() == "fr":
+                return "fr"
+        except Exception:
+            pass
+    if len((description or "").split()) >= 8 and text_language(description) == "fr":
+        return "fr"
     return "en"
 
 

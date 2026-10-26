@@ -1363,6 +1363,17 @@ class StateManager:
             await db.commit()
             return cursor.rowcount
 
+    async def colleagues_in_outreach(self, prospect_id: str) -> int:
+        """How many people at this prospect's company Harvey has already
+        queued or written to (any status past 'new', bar a failed write)."""
+        async with self._connect() as db:
+            async with db.execute(
+                "SELECT COUNT(*) FROM prospects p, prospects c WHERE p.id = ? "
+                f"AND {_colleagues('p', 'c')} AND c.status NOT IN ('new', 'write_failed')",
+                (prospect_id,),
+            ) as cursor:
+                return (await cursor.fetchone())[0]
+
     async def colleague_who_replied(self, prospect_id: str) -> str | None:
         """The name of someone at this prospect's company who has replied,
         or None. A cold email to them is no longer cold: the company answered."""

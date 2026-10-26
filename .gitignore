@@ -21,6 +21,8 @@ linkedin_cookies.json
 
 # Generated during setup/training — contains your product details
 skills/product_knowledge.md
+# Your own emails, for the writer to match your voice
+skills/voice_samples.md
 
 # Local agent tooling
 .agents/

@@ -1389,6 +1389,26 @@ def build_queries(config, cities: list[str] | None = None,
     ]
 
 
+# Search syntax a preset wraps an industry in: never the industry itself.
+_SEARCH_GROUP = re.compile(r"\([^()]*\bOR\b[^()]*\)")
+_SEARCH_OPERATOR = re.compile(r"(?<!\S)-?(?:site|intitle|inurl|intext|after|before):\S+")
+
+
+def clean_industry(text: str) -> str:
+    """The industry inside the search that found a company. A preset stores
+    its whole search as the company's industry (the dashboard shows it as
+    "found by"); the writer wants "B2B SaaS", not 'B2B SaaS ("we raised" OR
+    raises) after:2025-04-26 -site:x.com'. Plain text comes back as it was."""
+    text = text or ""
+    if not (_SEARCH_OPERATOR.search(text) or _SEARCH_GROUP.search(text)):
+        return text.strip()
+    text = _SEARCH_GROUP.sub(" ", text)
+    text = re.sub(r'"[^"]*"', " ", text)
+    text = _SEARCH_OPERATOR.sub(" ", text)
+    text = re.sub(r"^\s*careers\b", " ", text.strip())
+    return re.sub(r"\s+", " ", text).strip(" ,;")
+
+
 def estimate_cost(provider_key: str, queries: list[DiscoveryQuery]) -> float:
     """Projected spend. Always call this before a run — and print it."""
     provider = PROVIDERS.get(provider_key)

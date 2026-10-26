@@ -172,6 +172,20 @@ SIGNAL_CATALOG: list[dict] = [
         "confidence_floor": 0.0,
     },
     {
+        "code": "SITE_LANGUAGE",
+        "label": "Site language",
+        "description": (
+            "The language their homepage declares (<html lang=\"fr\">). With "
+            "channels.email.language on auto, a French site gets French emails "
+            "even when nothing else says where the company is."
+        ),
+        "category": "profile",
+        "value_type": "text",
+        "collector": "profile",
+        "cost_note": "free (homepage HTML)",
+        "confidence_floor": 0.0,
+    },
+    {
         "code": "TECH_STACK",
         "label": "Website platform / tools",
         "description": "What the site is built on and which tools it runs (WordPress, Shopify, HubSpot, chat widgets, booking tools).",

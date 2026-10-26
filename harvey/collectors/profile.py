@@ -1346,6 +1346,12 @@ class ProfileCollector:
             return obs
         self.site_names[company_id] = site_name_from_html(home, domain)
 
+        # The language the site declares (<html lang="fr">): which language
+        # to write to them in when nothing else says where they are.
+        declared = re.search(r"""(?i)<html\b[^>]*\blang\s*=\s*["']?([a-z]{2})(?![a-z])""", home)
+        if declared:
+            add("SITE_LANGUAGE", text=declared.group(1).lower())
+
         # What the user's ICP rules out, in the company's own words; the
         # registry can add its activity code or closure below.
         excluded: list[str] = []

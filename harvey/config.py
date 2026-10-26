@@ -251,6 +251,10 @@ class EmailChannelConfig(BaseModel):
     # (e.g. your main site when you send from a secondary domain). On
     # autopilot, an email linking anywhere else waits in the Outbox.
     link_domains: list[str] = []
+    # Cold email to at most this many people per company at a time, the most
+    # senior first; the rest wait. Two founders of a five-person startup
+    # getting the same email on the same day reads as a mailing. 0: no limit.
+    contacts_per_company: int = 0
     # "auto": French to French companies (registry, .fr domain, location in
     # France or a French-speaking region), English to everyone else. "en" or
     # "fr" writes every email in that language. See harvey/language.py.
@@ -265,6 +269,13 @@ class EmailChannelConfig(BaseModel):
     # zone (see SendWindowConfig). None: no window, as before. Native
     # providers only; Instantly schedules its own sends.
     send_window: SendWindowConfig | None = None
+
+    @field_validator("contacts_per_company")
+    @classmethod
+    def _contacts_not_negative(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("channels.email.contacts_per_company can't be negative (0 = no limit)")
+        return v
 
     @field_validator("language", mode="before")
     @classmethod
@@ -685,6 +696,24 @@ class WriterConfig(BaseModel):
     # or HARVEY_HUMANIZER_SKILL). Off by default: installing the skill for
     # your own Claude Code use never changes what Harvey sends on its own.
     humanizer: bool = False
+    # What the first email does. "observation" (default): one specific
+    # observation and a question, no pitch, the product named only later.
+    # "offer": for a service, where the reader needs to know who writes and
+    # why: one sentence on who you are and what you do for them, tied to the
+    # observation, then a concrete low-effort offer.
+    first_email: str = "observation"
+    # Draft three first emails per person and keep the one a separate review
+    # call rates best (specific, relevant, respectful, clear, easy to answer).
+    # One more model call per draft.
+    critique: bool = False
+
+    @field_validator("first_email", mode="before")
+    @classmethod
+    def _known_first_email(cls, v) -> str:
+        value = str(v or "observation").strip().lower()
+        if value not in ("observation", "offer"):
+            raise ValueError("writer.first_email must be observation or offer")
+        return value
 
 
 class HarveyConfig(BaseModel):
