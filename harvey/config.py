@@ -558,10 +558,31 @@ def compliance_notice(config) -> str:
     )
 
 
+WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
 class QuietHoursConfig(BaseModel):
     start: str = "22:00"
     end: str = "07:00"
     timezone: str = "America/New_York"
+    # The days quiet hours start on; every day by default. Quiet 08:00-20:00
+    # on mon-fri keeps Harvey's own work (and its Claude use) to nights and
+    # weekends. A period that crosses midnight belongs to the day it starts.
+    days: list[str] = list(WEEKDAYS)
+
+    @field_validator("days", mode="before")
+    @classmethod
+    def _valid_days(cls, v) -> list[str]:
+        if v is None:
+            return list(WEEKDAYS)
+        if isinstance(v, str):
+            v = [v]
+        days = [str(d).strip().lower()[:3] for d in v if str(d).strip()]
+        unknown = [d for d in days if d not in WEEKDAYS]
+        if unknown:
+            raise ValueError(f"quiet_hours.days: {', '.join(unknown)} isn't a day. "
+                             f"Use {', '.join(WEEKDAYS)}.")
+        return [d for d in WEEKDAYS if d in days]
 
     @field_validator("start", "end")
     @classmethod
