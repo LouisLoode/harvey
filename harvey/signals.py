@@ -299,6 +299,65 @@ SIGNAL_CATALOG: list[dict] = [
     },
 
     {
+        "code": "ROLE_OPEN_DAYS",
+        "label": "Days a relevant role has been open",
+        "description": (
+            "How long the oldest of your hiring_signals roles has been open on the job "
+            "board their site links to, from its posting date. A role still open after "
+            "45 days is one they're struggling to fill: someone who can cover it while "
+            "they hire is the pitch. Only boards that date their roles say this."
+        ),
+        "category": "profile",
+        "value_type": "num",
+        "collector": "profile",
+        "cost_note": "free (included in the job-board feed read)",
+        "confidence_floor": 0.0,
+    },
+    {
+        "code": "REMOTE_ROLE",
+        "label": "Relevant role open to remote",
+        "description": (
+            "One of your hiring_signals roles on their job board is remote: the board "
+            "says so, or the title or location does (remote, télétravail). A company "
+            "that hires remotely is one that works with people it doesn't sit next to."
+        ),
+        "category": "profile",
+        "value_type": "bool",
+        "collector": "profile",
+        "cost_note": "free (included in the job-board feed read)",
+        "confidence_floor": 0.0,
+    },
+    {
+        "code": "STACK_MATCH",
+        "label": "Uses your stack",
+        "description": (
+            "Which of your icp.stack_keywords their job posts, careers page or site "
+            "framework mention (NestJS, Kafka, Next.js...), and how many. Someone "
+            "who already knows their stack starts on day one."
+        ),
+        "category": "profile",
+        "value_type": "num",
+        "collector": "profile",
+        "cost_note": "free (job-board feed, careers page, homepage HTML)",
+        "confidence_floor": 0.0,
+    },
+    {
+        "code": "NO_TECH_LEADER",
+        "label": "No technical lead on the team page",
+        "description": (
+            "Their team page lists founders or directors and nobody in a technical "
+            "role (no CTO, tech lead, developer or engineer). Likely a non-technical "
+            "founding team building software. Team pages are often incomplete, so "
+            "it's recorded as likely, not certain; a page naming no one in charge "
+            "records nothing."
+        ),
+        "category": "profile",
+        "value_type": "bool",
+        "collector": "profile",
+        "cost_note": "free (team page)",
+        "confidence_floor": 0.0,
+    },
+    {
         "code": "ICP_EXCLUDED",
         "label": "Ruled out by your ICP",
         "description": (

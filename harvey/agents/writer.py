@@ -21,7 +21,7 @@ from harvey.integrations.mail_provider import NATIVE_PROVIDERS
 from harvey.models.campaign import Campaign, EmailStep
 from harvey.state import WRITABLE_EMAIL_STATUSES, StateManager
 from harvey.sending_mode import sync_sending_mode
-from harvey.startups import startup_facts
+from harvey.startups import hiring_facts, startup_facts
 from harvey.untrusted import UNTRUSTED_RULE, fence
 
 logger = logging.getLogger("harvey.writer")
@@ -311,6 +311,7 @@ class Writer:
         startup = await self._startup(prospect.company_id)
         if startup is not None:
             facts.extend(startup)
+        facts.extend(await hiring_facts(getattr(self, "state", None), prospect.company_id))
 
         prompt = self.brain.load_prompt(
             "writer",

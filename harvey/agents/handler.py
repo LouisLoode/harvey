@@ -26,7 +26,7 @@ from harvey.integrations.mail_provider import (
 from harvey.models.conversation import Conversation, Message
 from harvey.state import COLLEAGUE_REPLIED, REVIEW_NEXT_REPLY_KEY, StateManager
 from harvey.sending_mode import sync_sending_mode
-from harvey.startups import startup_facts
+from harvey.startups import hiring_facts, startup_facts
 from harvey.untrusted import UNTRUSTED_RULE, fence
 
 logger = logging.getLogger("harvey.handler")
@@ -972,6 +972,12 @@ Product: {self.config.product.name} — {self.config.product.description}"""
             playbook = self.brain.load_skill("selling_to_startups")
             if playbook:
                 prompt += "\n\nSELLING TO STARTUP FOUNDERS\n" + playbook
+        # Their tech hiring (a role open for weeks, the stack, no technical
+        # lead), read off their own job board and site.
+        hiring = await hiring_facts(self.state, getattr(prospect, "company_id", ""))
+        if hiring:
+            prompt += ("\n\nWhat their job board and site say about their tech hiring:\n"
+                       + fence("\n".join(hiring), "company research"))
 
         prompt += f"""
 

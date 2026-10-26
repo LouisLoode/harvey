@@ -90,6 +90,9 @@ class ICPConfig(BaseModel):
     # French activity-code (NAF) prefixes to rule out, read from the company
     # registry: "78." staffing, "64.30" investment funds, "73.11" ad agencies.
     exclude_naf: list[str] = []
+    # The technologies you work in ("NestJS", "Kafka", "Next.js"): a company
+    # whose job posts or site mention them gets the STACK_MATCH signal.
+    stack_keywords: list[str] = []
 
     @field_validator("search_languages", mode="before")
     @classmethod

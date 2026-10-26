@@ -926,6 +926,7 @@ def _state():
 # What a reviewer needs next to a draft to check its claims against the facts.
 OUTBOX_CONTEXT_SIGNALS = (
     "TECH_STACK", "INCUMBENT_AGENCY", "HIRING_ROLE", "RUNNING_GOOGLE_ADS", "NO_ONLINE_BOOKING",
+    "ROLE_OPEN_DAYS", "NO_TECH_LEADER", "STACK_MATCH", "REMOTE_ROLE",
 )
 
 

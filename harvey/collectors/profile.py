@@ -96,6 +96,9 @@ TECH_FINGERPRINTS: dict[str, tuple[str, ...]] = {
     "Housecall Pro": (r"housecallpro",),
     "CallRail": (r"cdn\.callrail\.com",),
     "Stripe": (r"js\.stripe\.com",),
+    # The app frameworks a startup's own site is often built with.
+    "Next.js": (r"/_next/static/", r"__NEXT_DATA__"),
+    "Nuxt": (r"/_nuxt/", r"__NUXT__"),
 }
 
 GOOGLE_ADS = (r"googleadservices\.com", r"gtag/js\?id=AW-", r"google_conversion",
@@ -111,7 +114,8 @@ AI_CRAWLERS = ("gptbot", "google-extended", "ccbot", "anthropic-ai", "claudebot"
                "perplexitybot", "bytespider")
 
 TEAM_PATHS = ("/team", "/about", "/about-us", "/our-team", "/staff",
-              "/leadership", "/meet-the-team", "/company/team")
+              "/leadership", "/meet-the-team", "/company/team",
+              "/equipe", "/notre-equipe", "/a-propos", "/qui-sommes-nous")
 CAREERS_PATHS = ("/careers", "/jobs", "/join-us", "/employment", "/hiring",
                  "/about/careers", "/careers/", "/recrutement", "/carrieres", "/nous-rejoindre")
 # A homepage link to the careers page beats guessing paths: careers.acme.com
@@ -912,6 +916,64 @@ def _meta_description(html: str) -> str:
     return ""
 
 
+# ── what a freelance tech lead looks for ──
+
+# Spellings of one technology, folded to one key: "Next.js", "NextJS" and
+# "next js" are the same, and so are "k8s" and "Kubernetes".
+_STACK_ALIASES = ({"kubernetes", "k8s"}, {"mongodb", "mongo"}, {"postgresql", "postgres"},
+                  {"nodejs", "node"}, {"golang", "go"})
+_STACK_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+#-]*")
+
+
+def _stack_key(word: str) -> str:
+    return re.sub(r"[^a-z0-9+#]", "", (word or "").lower())
+
+
+def stack_keywords(icp) -> list[str]:
+    return [k.strip() for k in (getattr(icp, "stack_keywords", None) or [])
+            if isinstance(k, str) and k.strip()]
+
+
+def stack_matches(keywords: list[str], texts: list[str]) -> list[str]:
+    """The keywords (as you wrote them) that the texts mention."""
+    words = [_stack_key(w.rstrip(".-")) for t in texts for w in _STACK_TOKEN.findall(t or "")]
+    seen = set(words) | {a + b for a, b in zip(words, words[1:])}
+    found = []
+    for keyword in keywords:
+        key = _stack_key(keyword)
+        variants = {key}.union(*(group for group in _STACK_ALIASES if key in group))
+        # "go" and "node" alone are ordinary words: only their long forms
+        # count unless you wrote the short one yourself.
+        if key not in ("go", "node"):
+            variants -= {"go", "node"}
+        if key and variants & seen:
+            found.append(keyword)
+    return found
+
+
+_TECH_TITLE = re.compile(
+    r"(?i)\b(?:cto|chief technology|chief technical|vp (?:of )?engineering|"
+    r"head of (?:engineering|tech(?:nology)?|product engineering)|tech(?:nical)? lead|"
+    r"lead dev(?:eloper)?|engineering manager|technical co-?founder|"
+    r"direct(?:eur|rice) technique|responsable technique|(?:co-?)?fondat(?:eur|rice) technique|"
+    r"d[ée]veloppeu(?:r|se)|developer|engineer|ing[ée]nieure?|devops|full[- ]?stack|"
+    r"back[- ]?end|front[- ]?end)\b")
+
+
+def tech_leadership(people_found: list[dict]) -> tuple[int, str] | None:
+    """(1, why) when the team page lists founders or directors and nobody
+    technical; (0, the technical title) when someone is; None when the page
+    names no one in charge, which says nothing either way."""
+    from harvey.collectors.people import is_owner_title
+    tech = [p for p in people_found if _TECH_TITLE.search(p.get("title") or "")]
+    if tech:
+        return 0, tech[0]["title"]
+    leads = [p for p in people_found if is_owner_title(p.get("title") or "")]
+    if leads:
+        return 1, f"team page lists {len(leads)} founder(s) or director(s), nobody in a technical role"
+    return None
+
+
 class ProfileCollector:
     """Fetches a business's public pages and emits observations.
 
@@ -1018,7 +1080,9 @@ class ProfileCollector:
                 break
         return await self._first_present(site, CAREERS_PATHS)
 
-    async def _hiring(self, site: str, home: str, domain: str, add) -> None:
+    async def _hiring(self, site: str, home: str, domain: str, add) -> list[str]:
+        """Record open roles; return the text read about them (titles and
+        descriptions, or the careers page), for the stack they mention."""
         curl, chtml = "", ""
         board = detect_board(home, domain)
         if board is None:
@@ -1028,14 +1092,20 @@ class ProfileCollector:
         if postings is not None:
             add("OPEN_ROLES", num=len(postings), text=board.label, url=board.page_url)
             keywords = getattr(self, "role_keywords", None) or []
-            matched = matching_roles(postings, keywords)[:MAX_BOARD_ROLES]
-            for post in matched:
+            relevant = matching_roles(postings, keywords)
+            for post in relevant[:MAX_BOARD_ROLES]:
                 add("HIRING_ROLE", text=post.summary(), url=post.url or board.page_url)
-            if not matched:
+            if not relevant:
                 # The board answered and lists nothing relevant: say so, so
                 # last month's (now closed) roles stop being the current view.
                 add("HIRING_ROLE", num=0, url=board.page_url)
-            return
+            self._role_age(relevant, board, add)
+            if relevant:
+                remote = next((p for p in relevant if p.remote), None)
+                add("REMOTE_ROLE", num=1 if remote else 0,
+                    text=remote.summary() if remote else "",
+                    url=(remote.url if remote else "") or board.page_url)
+            return [f"{p.title} {p.text}" for p in postings]
         if board and not chtml:
             curl, chtml = await self._careers_page(site, home, domain)
         if chtml and self.wants("HIRING_ROLE"):
@@ -1065,6 +1135,23 @@ class ProfileCollector:
                 # A careers page with none of your roles: say so, so an old
                 # row stops being the current view (as for a job board).
                 add("HIRING_ROLE", num=0, url=curl)
+        return [_text(chtml)] if chtml else []
+
+    @staticmethod
+    def _role_age(relevant, board, add) -> None:
+        """ROLE_OPEN_DAYS: how long the oldest dated relevant role has been
+        open. A role still open after weeks is one they can't fill."""
+        dated = [p for p in relevant if p.posted]
+        if not dated:
+            return
+        oldest = min(dated, key=lambda p: p.posted)
+        try:
+            days = (datetime.now(timezone.utc).date()
+                    - datetime.strptime(oldest.posted, "%Y-%m-%d").date()).days
+        except ValueError:
+            return
+        add("ROLE_OPEN_DAYS", num=max(0, days), text=oldest.summary(), url=oldest.url or board.page_url)
+
     async def _search_hit(self, company_id: str, code: str) -> bool:
         """Is the latest reading a preset search's hit? (see state.search_hit)"""
         if getattr(self, "state", None) is None:
@@ -1378,19 +1465,31 @@ class ProfileCollector:
         # open roles → hiring intent. The job-board feed when their site
         # links one (titles, departments and dates for every role), else
         # whatever the careers page's own HTML lists. Any failure here costs
-        # only these two signals, never the rest of the profile.
-        if self.wants("HIRING_ROLE") or self.wants("OPEN_ROLES"):
+        # only these signals, never the rest of the profile.
+        hiring_text: list[str] = []
+        if any(self.wants(c) for c in ("HIRING_ROLE", "OPEN_ROLES", "ROLE_OPEN_DAYS",
+                                        "REMOTE_ROLE", "STACK_MATCH")):
             try:
-                await self._hiring(site, home, domain, add)
+                hiring_text = await self._hiring(site, home, domain, add)
             except Exception as e:
                 logger.info(f"profile: {domain} open roles unread: {type(e).__name__}: {e}")
 
-        # team page → people
-        if self.wants("CONTACT_FOUND") or self.wants("DECISION_MAKER_TITLE"):
+        # The stack they hire for or build with, against icp.stack_keywords.
+        # Nothing read about their roles and no framework on the homepage
+        # says nothing, so no row.
+        wanted_stack = stack_keywords(getattr(self, "icp", None))
+        if self.wants("STACK_MATCH") and wanted_stack:
+            found = stack_matches(wanted_stack, hiring_text + tech)
+            if found or hiring_text:
+                add("STACK_MATCH", num=len(found), text=", ".join(found))
+
+        # team page → people, and whether anyone there is technical
+        if any(self.wants(c) for c in ("CONTACT_FOUND", "DECISION_MAKER_TITLE", "NO_TECH_LEADER")):
             turl, thtml = await self._first_present(site, TEAM_PATHS)
             if thtml:
-                for person in self.detect_people(thtml, domain=domain,
-                                                 site_name=self.site_names.get(company_id, "")):
+                team = self.detect_people(thtml, domain=domain,
+                                          site_name=self.site_names.get(company_id, ""))
+                for person in team:
                     label = f"{person['first_name']} {person['last_name']}"
                     add("CONTACT_FOUND",
                         text=f"{label} — {person['title']}" if person["title"] else label,
@@ -1398,6 +1497,10 @@ class ProfileCollector:
                     if person["is_decision_maker"]:
                         add("DECISION_MAKER_TITLE",
                             text=f"{label} — {person['title']}", url=turl)
+                verdict = tech_leadership(team)
+                if verdict is not None:
+                    # A team page is rarely complete: likely, not certain.
+                    add("NO_TECH_LEADER", num=verdict[0], text=verdict[1], conf=0.7, url=turl)
 
         # Written either way, so a changed exclusion list takes effect on the
         # next profile instead of an old "excluded" lasting forever.
