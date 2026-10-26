@@ -19,6 +19,7 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 
+from harvey.icp_filter import excluded_by, has_exclusions
 from harvey.public_http import public_http_client
 from harvey.startups import funding_text
 
@@ -901,6 +902,16 @@ def _page_title(html: str) -> str:
     return html_unescape(re.sub(r"(?s)<[^>]+>", " ", " ".join(parts))).lower()
 
 
+def _meta_description(html: str) -> str:
+    """The description a homepage gives of itself (meta or og:description)."""
+    for pat in (r"""(?i)<meta[^>]+name=["']description["'][^>]*content=["']([^"']*)""",
+                r"""(?i)<meta[^>]+property=["']og:description["'][^>]*content=["']([^"']*)"""):
+        m = re.search(pat, html or "")
+        if m:
+            return html_unescape(m.group(1)).strip()
+    return ""
+
+
 class ProfileCollector:
     """Fetches a business's public pages and emits observations.
 
@@ -909,12 +920,14 @@ class ProfileCollector:
     """
 
     def __init__(self, state, confirmed: set[str] | None = None, timeout: float = 12.0,
-                 role_keywords: list[str] | None = None):
+                 role_keywords: list[str] | None = None, icp=None):
         self.state = state
         self.confirmed = confirmed if confirmed is not None else set()
         self.timeout = timeout
         # icp.hiring_signals (or icp.titles): which open roles are worth a row.
         self.role_keywords = list(role_keywords or [])
+        # The ICP, for what it rules out (icp.exclude_keywords / exclude_naf).
+        self.icp = icp
         self._client: httpx.AsyncClient | None = None
         self.site_names: dict[str, str] = {}
         # Hosts that answered with a bot challenge (SiteGround's 202,
@@ -922,6 +935,9 @@ class ProfileCollector:
         self.challenged: set[str] = set()
 
     def wants(self, code: str) -> bool:
+        if code == "ICP_EXCLUDED":
+            # Setting icp.exclude_* is the user's confirmation.
+            return has_exclusions(getattr(self, "icp", None))
         return code in self.confirmed
 
     async def __aenter__(self):
@@ -1228,6 +1244,15 @@ class ProfileCollector:
             return obs
         self.site_names[company_id] = site_name_from_html(home, domain)
 
+        # What the user's ICP rules out, in the company's own words; the
+        # registry can add its activity code or closure below.
+        excluded: list[str] = []
+        if self.wants("ICP_EXCLUDED"):
+            hit = excluded_by(self.icp, self.site_names[company_id], _page_title(home),
+                              _meta_description(home))
+            if hit:
+                excluded.append(f"its site says \"{hit}\"")
+
         # Ads (they are spending TODAY — the strongest budget signal here)
         add("RUNNING_GOOGLE_ADS", num=1 if self._any(home, GOOGLE_ADS) else 0)
         add("RUNNING_META_ADS", num=1 if self._any(home, META_PIXEL) else 0)
@@ -1374,6 +1399,9 @@ class ProfileCollector:
                         add("DECISION_MAKER_TITLE",
                             text=f"{label} — {person['title']}", url=turl)
 
+        # Written either way, so a changed exclusion list takes effect on the
+        # next profile instead of an old "excluded" lasting forever.
+        add("ICP_EXCLUDED", num=1 if excluded else 0, text="; ".join(excluded))
         return obs
 
     async def _improve_name(self, company: dict, domain: str):
@@ -1446,8 +1474,9 @@ async def profile_companies(state, companies: list[dict], config=None) -> tuple[
         return 0, ""
     run_id = await state.start_run("profile", provider="http")
     try:
-        keywords = role_keywords(getattr(config, "icp", None))
-        async with ProfileCollector(state, confirmed, role_keywords=keywords) as collector:
+        icp = getattr(config, "icp", None)
+        keywords = role_keywords(icp)
+        async with ProfileCollector(state, confirmed, role_keywords=keywords, icp=icp) as collector:
             n = await collector.run(companies, run_id=run_id)
         await state.finish_run(run_id, records=n, cost_usd=0.0)
         return n, run_id

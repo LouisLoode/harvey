@@ -83,6 +83,13 @@ class ICPConfig(BaseModel):
     # Each language adds its own searches, so ["en", "fr"] doubles the
     # estimate. Supported: "en", "fr".
     search_languages: list[str] = ["en"]
+    # Words that rule a company out when its own name, page title or
+    # description uses them: competitors and non-buyers ("ESN", "cabinet de
+    # recrutement", "venture capital"). Whole words, case and accents ignored.
+    exclude_keywords: list[str] = []
+    # French activity-code (NAF) prefixes to rule out, read from the company
+    # registry: "78." staffing, "64.30" investment funds, "73.11" ad agencies.
+    exclude_naf: list[str] = []
 
     @field_validator("search_languages", mode="before")
     @classmethod

@@ -517,6 +517,14 @@ MIGRATIONS: list[str] = [
     """,
 ]
 
+# Signals that move a company up the contacts backfill: it is hiring for a
+# role you care about, struggling to fill it, has no technical lead, uses your
+# stack, works remotely, just raised, or its directors are on record.
+BACKFILL_PRIORITY_SIGNALS = (
+    "HIRING_ROLE", "ROLE_OPEN_DAYS", "NO_TECH_LEADER", "STACK_MATCH", "REMOTE_ROLE",
+    "FUNDING_ROUND", "YC_BACKED", "ACCELERATOR", "REGISTRY_VERIFIED",
+)
+
 BRAIN_PROVIDERS = ("claude", "codex")
 _USAGE_LOG_COLUMN = {"claude": "claude_calls", "codex": "codex_calls"}
 
@@ -1890,26 +1898,47 @@ class StateManager:
         prospecting pass go back and fill that in, instead of only ever
         looking at companies it stumbles into fresh in the same cycle.
 
-        Ordered by ``prospects_checked_at`` (nulls first) rather than
-        recency, so a backfill pass rotates through the whole backlog
-        instead of retrying the same top-N-by-created_at companies every
-        cycle — a company a team page didn't exist for last time is worth
-        another look after ``stale_days``, not a permanent skip.
+        Companies showing buying intent come first (how many of
+        BACKFILL_PRIORITY_SIGNALS they currently show), then by
+        ``prospects_checked_at`` (nulls first) rather than recency, so a
+        backfill pass rotates through the whole backlog instead of retrying
+        the same top-N-by-created_at companies every cycle — a company a team
+        page didn't exist for last time is worth another look after
+        ``stale_days``, not a permanent skip. A company the ICP rules out
+        (ICP_EXCLUDED) is never returned.
         """
+        codes = ("ICP_EXCLUDED",) + BACKFILL_PRIORITY_SIGNALS
+        marks = ",".join("?" for _ in codes)
+        intent = ",".join("?" for _ in BACKFILL_PRIORITY_SIGNALS)
         async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
-                """SELECT c.id, c.name, c.domain, c.industry
+                f"""WITH latest AS (
+                       SELECT o.company_id, o.signal_code, o.value_num
+                       FROM observations o
+                       JOIN (SELECT company_id, signal_code, MAX(observed_at) AS at
+                             FROM observations WHERE signal_code IN ({marks})
+                             GROUP BY company_id, signal_code) l
+                         ON l.company_id = o.company_id AND l.signal_code = o.signal_code
+                        AND l.at = o.observed_at
+                   )
+                   SELECT c.id, c.name, c.domain, c.industry
                    FROM companies c
                    LEFT JOIN prospects p ON p.company_id = c.id
                    WHERE c.domain != ''
                      AND (c.prospects_checked_at IS NULL
                           OR c.prospects_checked_at < datetime('now', ?))
+                     AND NOT EXISTS (SELECT 1 FROM latest x
+                                     WHERE x.company_id = c.id AND x.signal_code = 'ICP_EXCLUDED'
+                                       AND COALESCE(x.value_num, 1) != 0)
                    GROUP BY c.id
                    HAVING COUNT(p.id) = 0
-                   ORDER BY c.prospects_checked_at IS NOT NULL, c.prospects_checked_at
+                   ORDER BY (SELECT COUNT(DISTINCT y.signal_code) FROM latest y
+                             WHERE y.company_id = c.id AND y.signal_code IN ({intent})
+                               AND (y.value_num IS NULL OR y.value_num != 0)) DESC,
+                            c.prospects_checked_at IS NOT NULL, c.prospects_checked_at
                    LIMIT ?""",
-                (f"-{int(stale_days)} days", int(limit)),
+                (*codes, f"-{int(stale_days)} days", *BACKFILL_PRIORITY_SIGNALS, int(limit)),
             ) as cursor:
                 return [dict(r) for r in await cursor.fetchall()]
 

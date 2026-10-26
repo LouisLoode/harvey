@@ -1203,6 +1203,7 @@ class DiscoveryReport:
     actual_cost: float = 0.0
     found: int = 0
     junk: int = 0
+    excluded: int = 0
     new_companies: int = 0
     known_companies: int = 0
     observations: int = 0
@@ -1215,7 +1216,7 @@ class DiscoveryReport:
             "provider": self.provider, "queries": self.queries,
             "estimated_cost": round(self.estimated_cost, 4),
             "actual_cost": round(self.actual_cost, 4),
-            "found": self.found, "junk": self.junk,
+            "found": self.found, "junk": self.junk, "excluded": self.excluded,
             "new_companies": self.new_companies,
             "known_companies": self.known_companies,
             "observations": self.observations,
@@ -1409,8 +1410,10 @@ async def run_discovery(
     problems that would otherwise poison every market you scale to.
     """
     from harvey.config import load_env
+    from harvey.icp_filter import excluded_by
     from harvey.signals import seed_signal_catalog
 
+    icp = getattr(config, "icp", None)
     provider = PROVIDERS.get(provider_key)
     if provider is None:
         raise ValueError(f"unknown discovery provider: {provider_key!r}")
@@ -1498,6 +1501,11 @@ async def run_discovery(
                         biz.domain = company_host(biz.domain)
                     if is_junk(biz.domain, biz.raw_title or biz.name):
                         report.junk += 1
+                        continue
+                    if excluded_by(icp, biz.name, biz.raw_title):
+                        # A competitor or a non-buyer by the user's own ICP:
+                        # never stored, so never profiled or written to.
+                        report.excluded += 1
                         continue
                     ident = biz.identity()
                     if not ident:

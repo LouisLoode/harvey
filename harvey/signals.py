@@ -298,6 +298,24 @@ SIGNAL_CATALOG: list[dict] = [
         "confidence_floor": 0.0,
     },
 
+    {
+        "code": "ICP_EXCLUDED",
+        "label": "Ruled out by your ICP",
+        "description": (
+            "The company is one your ICP rules out: its own name, page title or "
+            "description uses a word in icp.exclude_keywords (a competitor, a "
+            "recruiter, a fund), or the registry gives an activity code in "
+            "icp.exclude_naf, or says it has closed. Recorded whenever those lists "
+            "are set (setting them is the confirmation); excluded companies are "
+            "skipped when Harvey looks for contacts."
+        ),
+        "category": "profile",
+        "value_type": "bool",
+        "collector": "profile",
+        "cost_note": "free (homepage HTML, public registry)",
+        "confidence_floor": 0.0,
+    },
+
     # ── People: who decides ──
     {
         "code": "CONTACT_FOUND",
