@@ -1,0 +1,81 @@
+"""Which language to write to a company in: French when it is French.
+
+``channels.email.language`` is "auto" (the default), "en" or "fr". On auto,
+a company is written to in French when:
+  - the French company registry knows it (its site published a SIREN);
+  - its domain is .fr;
+  - or its location is in France or a French-speaking region
+    (discovery stores the place it searched, e.g. "Toulouse, France").
+Everyone else gets English, as before.
+
+``text_language`` reads which language an email already is in, so its
+footer (the opt-out line) is in the same one.
+"""
+
+import re
+import unicodedata
+
+LANGUAGES = ("en", "fr")
+_REGISTRY_CODES = ("NAF_CODE", "COMPANY_AGE", "REGISTRY_VERIFIED", "HEADCOUNT_BAND")
+_FRENCH_PLACES = re.compile(
+    r"\b(?:france|belgique|wallonie|bruxelles|suisse romande|romandie|geneve|lausanne|"
+    r"quebec|montreal|luxembourg|monaco|francophone|paris|lyon|marseille|toulouse|"
+    r"bordeaux|lille|nantes|nice|strasbourg|montpellier|rennes|grenoble|occitanie|"
+    r"ile-de-france|auvergne|bretagne|normandie|provence)\b")
+
+# Words that are common in one language and rare in the other.
+_FR_WORDS = frozenset("""vous votre vos nous est les des une pour avec dans pas que qui
+sur sont mais aussi cette ces leur bonjour merci""".split())
+_EN_WORDS = frozenset("""you your the and is are for with this that have not but our
+their would could hi thanks""".split())
+
+# What the writer is told when the email is to be in French.
+FRENCH_RULES = """LANGUAGE: write this email in French — subject and body.
+- Vouvoiement ("vous"), never "tu". Natural spoken French, as one founder writes
+  to another; not translated English.
+- No stock French cold-email phrases: "Je me permets de vous contacter",
+  "N'hésitez pas à", "Dans un monde où", "Je reviens vers vous", "Suite à",
+  "Cordialement" as a closing, "J'espère que vous allez bien".
+- Greeting: "Bonjour <first name>," ("Bonjour," for a company's general inbox).
+- Keep the same rules as above: short, one observation, one question, no pitch.
+- French punctuation: a space before ? ! : ; and « » for quotes."""
+
+
+def _fold(text: str) -> str:
+    plain = unicodedata.normalize("NFKD", text or "").encode("ascii", "ignore").decode()
+    return plain.lower()
+
+
+def configured_language(config) -> str:
+    email = getattr(getattr(config, "channels", None), "email", None)
+    value = str(getattr(email, "language", "auto") or "auto").lower()
+    return value if value in LANGUAGES else "auto"
+
+
+async def company_language(state, config, company_id: str = "", domain: str = "",
+                           location: str = "") -> str:
+    """"fr" or "en" for one company (see the module docstring)."""
+    chosen = configured_language(config)
+    if chosen != "auto":
+        return chosen
+    if (domain or "").lower().rstrip(".").endswith(".fr"):
+        return "fr"
+    if _FRENCH_PLACES.search(_fold(location)):
+        return "fr"
+    lookup = getattr(state, "get_observations", None)
+    if company_id and lookup is not None:
+        for code in _REGISTRY_CODES:
+            try:
+                if await lookup(company_id=company_id, signal_code=code, latest_only=True, limit=1):
+                    return "fr"
+            except Exception:
+                break
+    return "en"
+
+
+def text_language(text: str) -> str:
+    """"fr" when the text reads as French, else "en"."""
+    words = re.findall(r"[a-zà-ÿœ']+", (text or "").lower())
+    fr = sum(1 for w in words if w in _FR_WORDS)
+    en = sum(1 for w in words if w in _EN_WORDS)
+    return "fr" if fr > en else "en"

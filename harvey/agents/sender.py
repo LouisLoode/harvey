@@ -22,6 +22,7 @@ from harvey.config import (
     compliance_of, live_do_not_contact, operator_timezone, send_window_of,
 )
 from harvey.gate import autopilot_review, do_not_contact_match, pre_send_check
+from harvey.language import text_language
 from harvey.send_window import in_window, next_send_time, recipient_zone
 from harvey.integrations.instantly import InstantlyClient
 from harvey.integrations.mail_provider import NATIVE_PROVIDERS, get_mail_provider
@@ -303,7 +304,8 @@ class Sender:
             for step in campaign.sequence
         ]
 
-        await self.state.remember_footer_lines(compliance_footer_lines(self.config))
+        await self.state.remember_footer_lines(
+                compliance_footer_lines(self.config) + compliance_footer_lines(self.config, "fr"))
         result = await self.instantly.set_campaign_emails(campaign_id, sequences)
         if result is None:
             logger.error(f"Sender: Failed to set emails for campaign {campaign_id}")
@@ -603,7 +605,7 @@ class Sender:
         underneath (CAN-SPAM). Added at send time, so a changed address
         applies to mail already queued; not added again when the body already
         ends with it."""
-        footer = "\n".join(compliance_footer_lines(self.config))
+        footer = "\n".join(compliance_footer_lines(self.config, text_language(body)))
         if not footer or body.rstrip().endswith(footer):
             return body
         return body.rstrip() + "\n\n" + footer
@@ -947,7 +949,8 @@ class Sender:
             else:
                 logger.info(f"Sender: cold email cap reached for today ({cold_cap}).")
         if sent_cold:
-            await self.state.remember_footer_lines(compliance_footer_lines(self.config))
+            await self.state.remember_footer_lines(
+                compliance_footer_lines(self.config) + compliance_footer_lines(self.config, "fr"))
             notice = compliance_notice(self.config)
             if notice:
                 logger.warning(f"Sender: {notice}")

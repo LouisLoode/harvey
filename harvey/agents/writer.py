@@ -21,6 +21,7 @@ from harvey.integrations.mail_provider import NATIVE_PROVIDERS
 from harvey.models.campaign import Campaign, EmailStep
 from harvey.state import WRITABLE_EMAIL_STATUSES, StateManager
 from harvey.sending_mode import sync_sending_mode
+from harvey.language import FRENCH_RULES, company_language
 from harvey.startups import hiring_facts, startup_facts
 from harvey.untrusted import UNTRUSTED_RULE, fence
 
@@ -89,8 +90,12 @@ class Writer:
             )
             return
 
-        # Batch prospects into campaign groups (by industry/title for relevance)
-        batches = self._group_prospects(prospects_with_email)
+        # The language each one is written to in: French to French companies.
+        languages = {p.id: await self._language(p) for p in prospects_with_email}
+
+        # Batch prospects into campaign groups (by industry/title for relevance,
+        # and by language: one template goes to the whole batch)
+        batches = self._group_prospects(prospects_with_email, languages)
 
         for batch_name, prospects in batches.items():
             if not prospects:
@@ -102,8 +107,9 @@ class Writer:
             )
 
             # Generate the email sequence
+            language = languages.get(prospects[0].id, "en")
             self._no_reply = False
-            sequence = await self._write_sequence(prospects)
+            sequence = await self._write_sequence(prospects, language)
             if not sequence:
                 paused = getattr(self.brain, "paused_reason", "") or (
                     "no reply from the model" if self._no_reply else "")
@@ -136,7 +142,7 @@ class Writer:
             # Native providers: replace the shared template for email 1 with
             # a per-prospect draft grounded in that company's actual facts.
             if self.is_native:
-                await self._personalize_first_emails(campaign_id, prospects)
+                await self._personalize_first_emails(campaign_id, prospects, language)
 
             await self.state.log_action(
                 action_type="write_campaign",
@@ -185,7 +191,20 @@ class Writer:
                 f"{MAX_WRITE_ATTEMPTS} unusable drafts; marked write_failed."
             )
 
-    async def _personalize_first_emails(self, campaign_id: str, prospects: list):
+    async def _language(self, prospect) -> str:
+        """"fr" or "en" for this prospect's company (see harvey.language)."""
+        company = None
+        if prospect.company_id:
+            try:
+                company = await self.state.get_company(prospect.company_id)
+            except Exception:
+                company = None
+        domain = (getattr(company, "domain", "") or (prospect.email or "").rpartition("@")[2])
+        return await company_language(self.state, self.config, prospect.company_id or "",
+                                      domain=domain, location=getattr(company, "location", "") or "")
+
+    async def _personalize_first_emails(self, campaign_id: str, prospects: list,
+                                        language: str = "en"):
         """Draft a grounded, per-prospect email 1 and stage it in the outbox.
 
         The outbox unique index means the sender's later template staging
@@ -204,7 +223,7 @@ class Writer:
         pending = []
         for prospect in prospects:
             try:
-                draft = await self._write_personal_email(prospect)
+                draft = await self._write_personal_email(prospect, language)
             except Exception as e:
                 logger.warning(f"Writer: personal draft failed for {prospect.email}: {e}")
                 continue
@@ -270,7 +289,7 @@ class Writer:
             + lines
         )
 
-    async def _write_personal_email(self, prospect) -> dict | None:
+    async def _write_personal_email(self, prospect, language: str = "en") -> dict | None:
         """One grounded draft for one person. Facts in, one email out."""
         inbox_rule = ""
         if prospect.is_company_inbox:
@@ -330,6 +349,7 @@ class Writer:
             prompt += self._startup_playbook()
         prompt += await self._feedback_block([prospect.id])
 
+        lang_rule = f"\n{FRENCH_RULES}\n" if language == "fr" else ""
         prompt += f"""
 
 Write ONE cold email (the very first touch) to this specific person.
@@ -349,7 +369,7 @@ Requirements:
 - Subject: lowercase, 2-5 words.
 - No postal address, unsubscribe or opt-out line: Harvey adds them when it sends.
 - Follow every STRICT EMAIL RULE above.{inbox_rule}
-
+{lang_rule}
 Return ONLY JSON: {{"subject": "...", "body": "..."}}"""
 
         result = await self.brain.think_json(
@@ -364,7 +384,7 @@ Return ONLY JSON: {{"subject": "...", "body": "..."}}"""
             return None
         return {"subject": subject[:120], "body": body[:2000]}
 
-    async def _write_sequence(self, prospects: list) -> list[EmailStep]:
+    async def _write_sequence(self, prospects: list, language: str = "en") -> list[EmailStep]:
         """Ask the brain to write a 3-email sequence."""
         # Build context about the prospects
         prospect_summary = "\n".join(
@@ -435,7 +455,7 @@ Requirements:
 - Subject lines: lowercase, 2-5 words.
 - No postal address, unsubscribe or opt-out line: Harvey adds them when it sends.
 - Follow every rule in the STRICT EMAIL RULES above. No exceptions.
-
+{FRENCH_RULES + chr(10) if language == "fr" else ""}
 Return ONLY a JSON array (no markdown fences, no commentary):
 [
   {{"step": 1, "subject": "...", "body": "...", "delay_days": 0}},
@@ -515,8 +535,10 @@ Return ONLY a JSON array (no markdown fences, no commentary):
             logger.warning(f"Writer: Expected 3 emails, got {len(steps)}.")
         return steps
 
-    def _group_prospects(self, prospects: list) -> dict[str, list]:
-        """Group prospects into campaign batches by industry/title combo."""
+    def _group_prospects(self, prospects: list, languages: dict | None = None) -> dict[str, list]:
+        """Group prospects into campaign batches by industry/title combo, and
+        by the language they're written to in (``languages``: prospect id ->
+        "fr" | "en"; English batches keep their names)."""
         batches: dict[str, list] = {}
 
         for prospect in prospects:
@@ -526,6 +548,8 @@ Return ONLY a JSON array (no markdown fences, no commentary):
             # greet anyone by name.
             kind = "inbox-outreach" if prospect.is_company_inbox else "outreach"
             key = f"{industry}-{kind}"
+            if (languages or {}).get(prospect.id) == "fr":
+                key += "-fr"
 
             if key not in batches:
                 batches[key] = []

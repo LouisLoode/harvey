@@ -251,6 +251,10 @@ class EmailChannelConfig(BaseModel):
     # (e.g. your main site when you send from a secondary domain). On
     # autopilot, an email linking anywhere else waits in the Outbox.
     link_domains: list[str] = []
+    # "auto": French to French companies (registry, .fr domain, location in
+    # France or a French-speaking region), English to everyone else. "en" or
+    # "fr" writes every email in that language. See harvey/language.py.
+    language: str = "auto"
     # Kill switch: pause all sending when bounces exceed this fraction of
     # sent mail (measured over the trailing sends). 0 disables the switch.
     max_bounce_rate: float = 0.05
@@ -261,6 +265,14 @@ class EmailChannelConfig(BaseModel):
     # zone (see SendWindowConfig). None: no window, as before. Native
     # providers only; Instantly schedules its own sends.
     send_window: SendWindowConfig | None = None
+
+    @field_validator("language", mode="before")
+    @classmethod
+    def _known_language(cls, v) -> str:
+        value = str(v or "auto").strip().lower()
+        if value not in ("auto", "en", "fr"):
+            raise ValueError("channels.email.language must be auto, en or fr")
+        return value
 
     @field_validator("warmup", mode="before")
     @classmethod
@@ -401,6 +413,8 @@ class PreclearedConfig(BaseModel):
 
 
 DEFAULT_OPT_OUT_LINE = 'Not interested? Reply "no thanks" and I won\'t email again.'
+# Under an email written in French (see harvey/language.py).
+DEFAULT_OPT_OUT_LINE_FR = "Pas intéressé ? Répondez « non merci » et je ne vous écrirai plus."
 # The replies the Handler always honours as an opt-out on their own; an
 # opt_out_line must ask for one of them ("Reply STOP", 'reply "no thanks"').
 OPT_OUT_WORDS = ("no thanks", "no thank you", "unsubscribe", "stop", "remove me",
@@ -408,6 +422,11 @@ OPT_OUT_WORDS = ("no thanks", "no thank you", "unsubscribe", "stop", "remove me"
 _ASKS_FOR_OPT_OUT_RE = re.compile(
     r"\breply(?:\s+with)?\s*[\"'\u201c\u2018]?\s*(?:"
     + "|".join(re.escape(w) for w in OPT_OUT_WORDS) + r")\b", re.IGNORECASE)
+# The French replies the Handler honours on their own, and the line asking for one.
+OPT_OUT_WORDS_FR = ("non merci", "stop", "désinscription", "désabonnement")
+_ASKS_FOR_OPT_OUT_FR_RE = re.compile(
+    r"\br[ée]pond(?:ez|re|s)(?:\s+(?:simplement|juste|par))*\s*[«\"'\u201c\u2018]?\s*(?:"
+    + "|".join(re.escape(w) for w in OPT_OUT_WORDS_FR) + r")\b", re.IGNORECASE)
 
 
 class ComplianceConfig(BaseModel):
@@ -419,6 +438,9 @@ class ComplianceConfig(BaseModel):
     # Must ask for wording Harvey recognises as an opt-out (OPT_OUT_WORDS).
     # "" leaves it off (and harvey warns).
     opt_out_line: str = DEFAULT_OPT_OUT_LINE
+    # The same under an email written in French; must ask for a French
+    # opt-out reply ("Répondez « non merci »", "Répondez STOP").
+    opt_out_line_fr: str = DEFAULT_OPT_OUT_LINE_FR
     # Companies this operator will never email: competitors, existing
     # customers, anyone under a legal hold, a partner you agreed not to
     # approach. An entry is an address ("jane@acme.example") or a domain
@@ -427,7 +449,7 @@ class ComplianceConfig(BaseModel):
     # replies as well as cold mail — "never contact" means never.
     do_not_contact: list[str] = []
 
-    @field_validator("postal_address", "opt_out_line", mode="before")
+    @field_validator("postal_address", "opt_out_line", "opt_out_line_fr", mode="before")
     @classmethod
     def _blank_is_empty(cls, v):
         return "" if v is None else v
@@ -481,17 +503,37 @@ class ComplianceConfig(BaseModel):
         return v
 
 
+    @field_validator("opt_out_line_fr")
+    @classmethod
+    def _recognisable_opt_out_fr(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            return v
+        if any(bit in v.lower() for bit in ("http", "www.", "@")):
+            raise ValueError("opt_out_line_fr can't contain a link or an email address.")
+        if not _ASKS_FOR_OPT_OUT_FR_RE.search(v):
+            raise ValueError(
+                "opt_out_line_fr must ask for a reply Harvey recognises as an opt-out, "
+                "e.g. Répondez « non merci » / Répondez STOP. Recognised: "
+                + ", ".join(f'"{w}"' for w in OPT_OUT_WORDS_FR) + "."
+            )
+        return v
+
+
 def compliance_of(config) -> ComplianceConfig:
     """The compliance section, or the defaults when a config has none."""
     found = getattr(config, "compliance", None)
     return found if isinstance(found, ComplianceConfig) else ComplianceConfig()
 
 
-def compliance_footer_lines(config) -> list[str]:
-    """The lines added under every cold email: address, then opt-out line."""
+def compliance_footer_lines(config, language: str = "en") -> list[str]:
+    """The lines added under every cold email: address, then the opt-out
+    line in the email's language (English when there is no French one)."""
     compliance = compliance_of(config)
-    return [line for line in (compliance.postal_address.strip(),
-                              compliance.opt_out_line.strip()) if line]
+    opt_out = compliance.opt_out_line.strip()
+    if language == "fr" and compliance.opt_out_line_fr.strip():
+        opt_out = compliance.opt_out_line_fr.strip()
+    return [line for line in (compliance.postal_address.strip(), opt_out) if line]
 
 
 def compliance_notice(config) -> str:

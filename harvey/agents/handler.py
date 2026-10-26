@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 
 from harvey.brain import Brain, BrainUnavailable
 from harvey.config import (
-    DEFAULT_OPT_OUT_LINE, HarveyConfig, EnvConfig, compliance_of, legacy_sending_held,
+    DEFAULT_OPT_OUT_LINE, DEFAULT_OPT_OUT_LINE_FR, HarveyConfig, EnvConfig, compliance_of, legacy_sending_held,
     live_do_not_contact,
 )
 from harvey.gate import autopilot_review, do_not_contact_match, pre_send_check
@@ -71,15 +71,23 @@ OPT_OUT_PATTERNS = (
     "never contact",
     "delete my info",
     "delete my data",
+    # French
+    "désinscri", "desinscri", "désabonn", "desabonn", "plus recevoir",
+    "ne me contactez plus", "ne plus me contacter", "ne plus être contacté",
+    "retirez-moi", "retirez moi", "supprimez mes données", "arrêtez de m'écrire",
 )
 # "No thanks" (what cold email's footer asks for) as a phrase: not "no
 # Thanksgiving", "Bruno / Thanks," or "yes or no, thanks".
 # Checked one line at a time: "...the answer is no / Thanks!" is a sign-off.
 NO_THANKS_RE = re.compile(
     r"(?<!\bor )\bno,?[ \t]+thank(?:s|[ \t]+you)\b(?![ \t]+(?:needed|necessary|required))")
+# "Non merci", what the French footer asks for, the same way: not "non,
+# merci pour le lien" or "oui ou non, merci".
+NON_MERCI_RE = re.compile(r"(?<!\bou )\bnon,?[ \t]+merci\b(?![ \t]+(?:pour|de|d['’]))")
 # A reply that says only this (signature aside) is an opt-out ("Reply STOP").
 BARE_OPT_OUTS = {"stop", "unsubscribe", "remove", "remove me", "opt out",
-                 "no thanks", "no thank you"}
+                 "no thanks", "no thank you", "non merci", "désinscription",
+                 "desinscription", "désabonnement"}
 _MOBILE_SIGNATURE_RE = re.compile(
     r"^[ \t]*(?:sent from my \w[^\n]*|get outlook for \w[^\n]*|sent from \w+ mail[^\n]*)$",
     re.IGNORECASE | re.MULTILINE)
@@ -156,7 +164,7 @@ def _opt_out_reason(their_text: str, own_words: str) -> dict | None:
             return {"rule": "phrase", "matched": p,
                     "why": f'Their reply contains "{p}".'}
     for line in their_text.split("\n"):
-        m = NO_THANKS_RE.search(_flat(line))
+        m = NO_THANKS_RE.search(_flat(line)) or NON_MERCI_RE.search(_flat(line))
         if m:
             return {"rule": "no_thanks", "matched": m.group(0),
                     "why": f'Their reply says "{m.group(0)}", what the opt-out line asks for.'}
@@ -371,6 +379,7 @@ class Handler:
             *await self.state.get_texts_for_prospect(prospect.id),
             *await self.state.get_footer_history(),
             compliance.postal_address, compliance.opt_out_line, DEFAULT_OPT_OUT_LINE,
+            compliance.opt_out_line_fr, DEFAULT_OPT_OUT_LINE_FR,
         ])
 
     async def _stop_colleagues(self, prospect):
@@ -1022,6 +1031,8 @@ Write a reply that:"""
 - Makes it easy for them to refer (one-line ask)
 - Under 50 words"""
 
+        prompt += ("\n\nWrite in the language of their latest message (French to a reply in "
+                   "French: vouvoiement, natural French, no stock phrases like \"N'hésitez pas\").")
         prompt += "\n\nWrite ONLY the email body. No subject line, no greeting label, no signature block, no markdown."
 
         response = await self.brain.think(
