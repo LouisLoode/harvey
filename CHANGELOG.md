@@ -9,6 +9,15 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **French startups.** `icp.search_languages: [fr]` makes the `funding` and
+  `hiring` presets search Google France in French ("lève 2 M€", "levée de
+  fonds", "recrutement"), on Serper (`gl`/`hl`) and DataForSEO SERP (France,
+  `fr`). `FUNDING_ROUND` reads a raise announced in French, with its amount in
+  euros ("1,5 M€", "3 millions d'euros"), its round ("amorçage", "série A") and
+  a French date, and turns down money raised for clients, a VC's new fund or
+  revenue. Careers, About and press pages are also found at their French
+  paths. French tech press, registries, job boards and freelance marketplaces
+  are filtered as junk. Defaults to `[en]`, so nothing changes unless set.
 - **TrulyInbox for warmup.** Harvey now recommends TrulyInbox for warming and
   keeping sending mailboxes healthy, and reads it: `harvey trulyinbox connect`
   (or the new warmup step on the dashboard's setup checklist) checks a key and
@@ -212,6 +221,11 @@ minor versions can still change behaviour.
 
 ### Fixed
 
+- **Startup presets on Serper's free tier.** Serper refuses a search with
+  operators (`site:`, `after:`) past 10 results on a free key ("Query pattern
+  not allowed for free accounts"), so every `funding`, `hiring`, `yc` and
+  `accelerator` search failed at the default depth of 30. Harvey now retries
+  at 10.
 - **Replies remember the whole conversation** (closes #97). A reply was
   written from the last six messages only, so a requirement the prospect
   stated earlier ("synthetic data only, processed in the EU") dropped out

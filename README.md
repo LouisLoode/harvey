@@ -263,6 +263,22 @@ are left out of the search, since a board page names a board, not a website
 to profile. Confirm `HIRING_ROLE` and profiling reads the board their site links
 to and records the role; the search hit alone records nothing.
 
+**Selling to French startups?** Set `icp.search_languages: [fr]` (or
+`[en, fr]` for both, which doubles the estimate). The `funding` and `hiring`
+presets then also search Google France in French ("lève 2 M€", "levée de
+fonds", "recrutement", "nous rejoindre"), with the French tech press, company
+registries, job boards and freelance marketplaces left out. The signals read
+French too: "Nous avons levé 2 M€", "Acme boucle un tour de table de 5 M€ en
+série A", dates like "12 février 2026", and careers and press pages at
+`/recrutement`, `/nous-rejoindre`, `/presse`. Money that isn't their raise
+("pour nos clients", "un fonds de 100 M€", "2 M€ de chiffre d'affaires")
+doesn't count. `yc` and `accelerator` have no French version and search in
+English.
+
+> **Serper's free tier** refuses searches with operators (`site:`, `after:`,
+> which every preset uses) past 10 results. Harvey retries those at 10 on
+> its own, so a preset run on a free key gets the first 10 results a search.
+
 Cities geocode themselves (cached forever, one lookup each). Directories, aggregators and institutions are filtered by pattern, not a blocklist — `en.wikipedia.org` and `biz.yelp.com` never make it in.
 
 > **Depth 20–30, not 100.** Google removed 100-results-per-page in September 2025, so depth 100 is now billed as ten pages nearly everywhere. Below rank 30 it is mostly directories anyway.

@@ -94,6 +94,15 @@ JUNK_DOMAIN_PATTERNS = tuple(re.compile(p, re.I) for p in (
     r"(^|\.)(startupintros|openvc|siliconcanals|startupdaily|e27|similarweb|vcbacked|roundos)\.",
     r"(^|\.)(techfundingnews|startups\.gallery)",
     r"(^|\.)tech\.eu$",
+    # the French equivalents: tech press, round trackers, company registries,
+    # job boards and freelance marketplaces (the French presets' noise)
+    r"(^|\.)(maddyness|frenchweb|lesechos|usine-digitale|usinenouvelle|journaldunet|latribune|cfnews|fusacq)\.",
+    r"(^|\.)(lefigaro|lemonde|bfmtv|challenges|capital|widoobiz|frenchtechjournal|decideurs-magazine)\.",
+    r"(^|\.)(lejournaldesentreprises|jaimelesstartups|alliancy|ticpharma|lemondeduchiffre|siecledigital)\.",
+    r"(^|\.)(presse-citron|eldorado|magstartup|independant|europeanstartupinsider|francedigitale)\.",
+    r"(^|\.)(bpifrance|lafrenchtech|societe|pappers|infogreffe|verif|annuaire-entreprises)\.",
+    r"(^|\.)(welcometothejungle|hellowork|apec|francetravail|pole-emploi|jobteaser|meteojob|cadremploi)\.",
+    r"(^|\.)(regionsjob|monster|choosemycompany|lesjeudis|talent|free-work|malt|codeur|comet|cremedelacreme)\.",
     # infrastructure that is never a prospect
     r"(^|\.)(google|bing|yahoo|duckduckgo|amazon|apple|microsoft)\.",
     r"(wordpress|wix|squarespace|shopify|godaddy|weebly|webflow)\.com$",
@@ -375,6 +384,7 @@ class DiscoveryQuery:
     depth: int = 30                  # SERP depth; ignored by listings providers
     limit: int = 100                 # max records to take from one query
     preset: str = ""                 # PRESETS key that built it, if any
+    language: str = ""               # "fr": a French search (Google France, in French)
 
     def keyword(self) -> str:
         return f"{self.term} {self.location}".strip()
@@ -403,8 +413,10 @@ US_STATES = {
 _US_STATE_NAMES = {v.lower(): v for v in US_STATES.values()}
 
 # DataForSEO requires a location on every SERP task. A search with no place
-# at all (the non-local YC preset) is a United States search.
+# at all (the non-local YC preset) is a United States search, or a French
+# one when the preset searches in French.
 DEFAULT_LOCATION_CODE = 2840
+LANGUAGE_LOCATION_CODES = {"fr": 2250}
 
 
 def dataforseo_location_name(place: str) -> str:
@@ -431,7 +443,7 @@ def _dfs_location(query: "DiscoveryQuery", point_suffix: str) -> dict:
             return {"location_coordinate": f"{lat.strip()},{lng.strip()},{point_suffix}"}
     if query.location:
         return {"location_name": dataforseo_location_name(query.location)}
-    return {"location_code": DEFAULT_LOCATION_CODE}
+    return {"location_code": LANGUAGE_LOCATION_CODES.get(query.language, DEFAULT_LOCATION_CODE)}
 
 
 # ── Provider adapters ─────────────────────────────────────────────────
@@ -630,7 +642,7 @@ class DataForSEOSerp(DiscoveryProvider):
     async def fetch(self, client, env, query):
         keyword = query.keyword()
         items = await self._post(client, env, "serp/google/organic/live/advanced", {
-            "keyword": keyword, "language_code": "en", "depth": query.depth,
+            "keyword": keyword, "language_code": query.language or "en", "depth": query.depth,
             "device": "desktop", **_dfs_location(query, self.POINT_RADIUS)})
 
         # One Business per identity: a company in the pack AND at organic 14
@@ -710,7 +722,7 @@ class DataForSEOMaps(DataForSEOSerp):
     async def fetch(self, client, env, query):
         keyword = query.keyword()
         items = await self._post(client, env, "serp/google/maps/live/advanced", {
-            "keyword": keyword, "language_code": "en", "depth": query.depth,
+            "keyword": keyword, "language_code": query.language or "en", "depth": query.depth,
             **_dfs_location(query, self.ZOOM)})
         out = []
         for item in items:
@@ -762,6 +774,9 @@ def _best(current: int | None, new) -> int | None:
     return new if current is None else min(current, new)
 
 
+SERPER_LOCALES = {"fr": {"gl": "fr", "hl": "fr"}}
+
+
 class Serper(DiscoveryProvider):
     """Google search with the friendliest free tier and the best depth pricing.
 
@@ -786,12 +801,26 @@ class Serper(DiscoveryProvider):
         return sum(0.001 * max(1, -(-q.depth // 10)) for q in queries)
 
     async def fetch(self, client, env, query):
-        r = await client.post(
-            "https://google.serper.dev/search",
-            headers={"X-API-KEY": env["serper_api_key"],
-                     "Content-Type": "application/json"},
-            json={"q": query.keyword(), "num": min(query.depth, 100)},
-        )
+        payload = {"q": query.keyword(), "num": min(query.depth, 100)}
+        if query.language:
+            # Google France, in French: "gl" is the country, "hl" the language.
+            payload.update(SERPER_LOCALES.get(query.language, {}))
+
+        async def search():
+            return await client.post(
+                "https://google.serper.dev/search",
+                headers={"X-API-KEY": env["serper_api_key"],
+                         "Content-Type": "application/json"},
+                json=payload,
+            )
+
+        r = await search()
+        # Free accounts refuse a search with operators (site:, after:, which
+        # every preset uses) past 10 results, so take the first 10.
+        if (r.status_code == 400 and payload["num"] > 10
+                and "not allowed for free accounts" in r.text.lower()):
+            payload["num"] = 10
+            r = await search()
         r.raise_for_status()
         data = r.json()
         out = []
@@ -1223,6 +1252,11 @@ PRESETS = {
                  "-site:teamtailor.com -site:personio.de -site:breezy.hr -site:applytojob.com "
                  "-site:myworkdayjobs.com -site:ats.rippling.com -site:linkedin.com "
                  "-site:indeed.com -site:glassdoor.com -site:ziprecruiter.com"),
+        # The same in French (icp.search_languages). Google reads only the
+        # first 32 words, so the French versions stay short.
+        "fr": ('"{role}" (recrutement OR carrières OR "nous rejoindre" OR "rejoignez-nous") {industry} '
+               "-site:welcometothejungle.com -site:linkedin.com -site:indeed.fr -site:hellowork.com "
+               "-site:apec.fr -site:francetravail.fr -site:malt.fr -site:free-work.com"),
         "local": False,
     },
     # Startups that say on their own site an accelerator backed them. Two
@@ -1251,14 +1285,24 @@ PRESETS = {
                  '("seed round" OR "Series A" OR "Series B") after:{since} '
                  "-site:techcrunch.com -site:crunchbase.com -site:pitchbook.com -site:linkedin.com "
                  "-site:prnewswire.com -site:businesswire.com -site:globenewswire.com"),
+        # A French raise is headlined "Acme lève 2 M€". In the title, not
+        # anywhere on the page: "levée de fonds" alone finds guides, glossaries
+        # and the consultants who sell them.
+        "fr": ('{industry} intitle:lève ("M€" OR "millions d\'euros") after:{since} '
+               "-site:maddyness.com -site:frenchweb.fr -site:lesechos.fr -site:usine-digitale.fr "
+               "-site:journaldunet.com -site:linkedin.com -site:instagram.com -site:facebook.com "
+               "-site:bpifrance.fr"),
         "local": False,
     },
 }
 FUNDING_LOOKBACK_DAYS = 548       # ~18 months: older raises aren't news
 
-
-def preset_templates(spec: dict) -> tuple[str, ...]:
-    """A preset's search templates: one ``term``, or several ``terms``."""
+def preset_templates(spec: dict, language: str = "en") -> tuple[str, ...]:
+    """A preset's search templates in ``language``: one ``term``, or several
+    ``terms``. Empty when the preset has no version in that language."""
+    if language != "en":
+        found = spec.get(language)
+        return (found,) if found else ()
     return tuple(spec.get("terms") or (spec["term"],))
 
 # A hit on careers.acme.com is acme.com's careers page.
@@ -1310,28 +1354,36 @@ def build_queries(config, cities: list[str] | None = None,
     icp = config.icp
     terms = list(icp.industries) or [config.product.name]
     spec = PRESETS.get(preset) if preset else None
+    searches: list[tuple[str, str]] = [(t, "") for t in terms]     # (term, language)
     if spec:
-        templates = preset_templates(spec)
+        # One pass per configured language that has a version of the preset;
+        # English when none does (the YC preset has no French one).
+        languages = [lang for lang in (getattr(icp, "search_languages", None) or ["en"])
+                     if preset_templates(spec, lang)] or ["en"]
         since = (date.today() - timedelta(days=FUNDING_LOOKBACK_DAYS)).isoformat()
         from harvey.collectors.ats import role_keywords
-        roles = role_keywords(icp) if any("{role}" in tpl for tpl in templates) else [""]
-        terms = [tpl.format(industry=t, role=r, since=since)
-                 for r in roles for t in terms for tpl in templates]
+        searches = []
+        for lang in languages:
+            templates = preset_templates(spec, lang)
+            roles = role_keywords(icp) if any("{role}" in tpl for tpl in templates) else [""]
+            searches += [(tpl.format(industry=t, role=r, since=since), "" if lang == "en" else lang)
+                         for r in roles for t in terms for tpl in templates]
         places = cities if cities is not None else ([""] if not spec["local"] else list(icp.geography) or [""])
     else:
         # "roofing contractor" is one way to search for a roofer. Each
         # configured variant is another search in every city — ranks differ
         # by phrasing, and the email should quote the phrase that was used.
         variants = getattr(icp, "keyword_variants", {}) or {}
-        terms = list(dict.fromkeys(
-            v.strip() for t in terms for v in [t, *variants.get(t, [])] if v.strip()))
+        searches = [(t, "") for t in dict.fromkeys(
+            v.strip() for t in terms for v in [t, *variants.get(t, [])] if v.strip())]
         places = cities if cities is not None else list(icp.geography) or [""]
     coords = getattr(icp, "geo_coordinates", {}) or {}
 
     return [
         DiscoveryQuery(term=term, location=place, depth=depth, limit=limit,
-                       coordinate=coords.get(place, ""), preset=preset if spec else "")
-        for term in terms
+                       coordinate=coords.get(place, ""), preset=preset if spec else "",
+                       language=language)
+        for term, language in searches
         for place in places
     ]
 

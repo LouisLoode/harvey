@@ -112,15 +112,18 @@ AI_CRAWLERS = ("gptbot", "google-extended", "ccbot", "anthropic-ai", "claudebot"
 TEAM_PATHS = ("/team", "/about", "/about-us", "/our-team", "/staff",
               "/leadership", "/meet-the-team", "/company/team")
 CAREERS_PATHS = ("/careers", "/jobs", "/join-us", "/employment", "/hiring",
-                 "/about/careers", "/careers/")
+                 "/about/careers", "/careers/", "/recrutement", "/carrieres", "/nous-rejoindre")
 # A homepage link to the careers page beats guessing paths: careers.acme.com
 # and /company/jobs are as common as /careers. Whole path segments and whole
 # anchors only: "/scheduling/hiring-marketplaces" is a product page.
 _CAREERS_HOST = re.compile(r"^(careers?|jobs|join)\.", re.I)
 _CAREERS_SEGMENTS = frozenset("""careers career jobs join join-us joinus work-with-us
-open-roles open-positions hiring""".split())
+open-roles open-positions hiring recrutement carrieres carrière carrières nous-rejoindre
+rejoignez-nous rejoindre-l-equipe emplois offres-emploi offres-d-emploi""".split())
 _CAREERS_ANCHOR = re.compile(r"^(careers?|jobs|join us|join (our|the) team|we['’]?re hiring"
-                             r"|open (roles|positions)|work with us)$", re.I)
+                             r"|open (roles|positions)|work with us"
+                             r"|recrutement|carri[èe]res?|nous rejoindre|rejoignez[- ]nous|on recrute"
+                             r"|nous recrutons|offres d['’]emploi|rejoindre l['’][ée]quipe)$", re.I)
 # Roles recorded per company from a board. The first few say it; twenty rows
 # of "Account Executive, <city>" don't say more.
 MAX_BOARD_ROLES = 5
@@ -296,8 +299,8 @@ def _text(html: str) -> str:
 YC_OWNED_DOMAINS = ("ycombinator.com", "workatastartup.com", "startupschool.org")
 _YC = r"(?:YC|Y[\s-]?Combinator)"
 _YC_LINK_RE = re.compile(r"ycombinator\.com\\?/companies\\?/([a-z0-9][\w-]*)", re.I)
-YC_ABOUT_PATHS = ("/about", "/about-us", "/company", "/our-story")
-FUNDING_PATHS = ("/press", "/news", "/newsroom", "/blog")
+YC_ABOUT_PATHS = ("/about", "/about-us", "/company", "/our-story", "/a-propos", "/qui-sommes-nous")
+FUNDING_PATHS = ("/press", "/news", "/newsroom", "/blog", "/presse", "/actualites", "/actus")
 _YC_SEASONS = {"w": "W", "winter": "W", "s": "S", "summer": "S",
                "f": "F", "fall": "F", "x": "X", "spring": "X"}
 _SEASON_WORD = r"(Winter|Summer|Fall|Spring)"
@@ -597,7 +600,8 @@ _AMOUNT_WORD = (r"(\d[\d,]*(?:\.\d+)?)\s?(k|mm|mn|mio|m|bn|b|million|billion|tho
 _CURRENCY = {"eur": "€", "euro": "€", "euros": "€", "usd": "$", "dollar": "$", "dollars": "$",
              "gbp": "£", "pound": "£", "pounds": "£"}
 _MULTIPLIER = {"k": 1e3, "thousand": 1e3, "m": 1e6, "mm": 1e6, "mn": 1e6, "mio": 1e6, "million": 1e6,
-               "b": 1e9, "bn": 1e9, "billion": 1e9}
+               "b": 1e9, "bn": 1e9, "billion": 1e9,
+               "millions": 1e6, "md": 1e9, "mds": 1e9, "milliard": 1e9, "milliards": 1e9}
 _ROUND_RANK = {"Pre-seed": 1, "Seed": 2, "Bridge": 3}
 _CLAUSE = r"(?:[^.!?]|\.(?=\d))"     # the rest of the sentence; "$4.5M" isn't its end
 _RAISE_VERB = (r"(?P<verb>raised|raises|closed|closes|secured|secures|landed|lands|completed|completes"
@@ -634,7 +638,7 @@ _MONTH_DATE_RE = re.compile(
     r"\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?"
     r"|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+(?:(\d{1,2})(?:st|nd|rd|th)?,?\s+)?(20\d{2})\b", re.I)
 _ISO_DATE_RE = re.compile(r"\b(20\d{2})-(\d{2})-(\d{2})\b")
-_YEAR_RE = re.compile(r"(?:\bin\s+|\(\s*)(20\d{2})\b")
+_YEAR_RE = re.compile(r"(?:\b(?:in|en)\s+|\(\s*)(20\d{2})\b")
 _JSONLD_DATE_RE = re.compile(r'"datePublished"\s*:\s*"(20\d{2}-\d{2}-\d{2})')
 _META_DATE_RES = (
     re.compile(r"""<meta[^>]+(?:property|name)=["'](?:article:published_time|date|pubdate)["'][^>]*"""
@@ -644,6 +648,48 @@ _META_DATE_RES = (
 )
 _TIME_RE = re.compile(r"""<time\b[^>]*datetime=["'](20\d{2}-\d{2}-\d{2})""", re.I)
 _URL_DATE_RES = (re.compile(r"/(20\d{2})-(\d{2})-(\d{2})(?:[/-]|$)"), re.compile(r"/(20\d{2})/(\d{2})/"))
+
+# The same, in French: "Nous avons levé 2 M€", "Acme lève 3 millions d'euros",
+# "Acme annonce une levée de fonds de 1,5 M€", "Acme boucle un tour de table",
+# "Nous sommes ravis d'annoncer notre levée de fonds". Not "nous accompagnons
+# les startups dans leur levée de fonds", money raised for clients, or a VC's
+# new fund. A French headline says what the money is for ("lève 2 M€ pour
+# accélérer"), so "pour" alone doesn't make it someone else's money.
+_ROUND_FR = (r"(pr[ée][\s-]?amor[çc]age|amor[çc]age|s[ée]rie\s+[a-h](?![\w-])"
+             r"|seed(?=\s*(?:[,.;:)]|$|\s+(?:de|d['’]|men[ée]e?|aupr[èe]s|avec)\b)))")
+_AMOUNT_FR = (r"(\d{1,3}(?:[\s\u00a0\u202f.]\d{3})+|\d+(?:[.,]\d+)?)\s?"
+              r"(k|m|md|mds|millions?|milliards?)?\s?(?:€|d['’]\s?euros?\b|euros?\b)")
+_RAISE_VERB_FR = (r"(?P<verb>lèvent|lève|levé|lever|bouclent|boucle|bouclé|boucler|clôture|clôturé|clôturer"
+                  r"|finalise|finalisé|finaliser|réalise|réalisé|réaliser|sécurise|sécurisé|sécuriser"
+                  r"|annonce|annoncé|annoncer|obtient|obtenu|obtenir)")
+_SUBJECT_AUX_FR = (r"(?:\s+(?:a|avons|ont|vient\s+de|venons\s+de|viennent\s+de|récemment|officiellement"
+                   r"|aujourd['’]hui|enfin|également|déjà)|\s+(?:vient|venons|viennent)\s+d['’])*")
+_ANNOUNCE_FR = (r"(?:(?:aujourd['’]hui,?\s+)?nous\s+sommes\s+(?:très\s+|particulièrement\s+)?"
+                r"(?:ravis|ravies|fiers|fières|heureux|heureuses|enchantés|enchantées)\s+d['’]"
+                r"(?:annoncer|partager|vous\s+annoncer)(?:\s+que)?\s+)")
+_LEAD_IN_FR = (r"(?:(?:aujourd['’]hui|actualité|annonce|communiqué(?:\s+de\s+presse)?)\s*[,:–-]?\s+"
+               r"|(?:en|le|début|fin|courant)\s+(?:\d{1,2}(?:er)?\s+)?(?:[a-zéû]+\s+)?\d{4},?\s+)?")
+_RAISE_NOUN_FR = r"(?:levée\s+de\s+fonds|tour\s+de\s+table|financement)"
+_NOT_THEIR_RAISE_FR = re.compile(
+    r"\b(?:pour|au\s+profit\s+de|pour\s+le\s+compte\s+de)\s+(?:nos\s+|leurs\s+|ses\s+|des\s+|les\s+|une?\s+)?"
+    r"(?:clients?|startups?|start-ups?|entreprises|fondateurs?|porteurs?\s+de\s+projets?|associations?"
+    r"|participations|portefeuille|adhérents?|membres?|œuvres?|causes?)\b"
+    r"|\b(?:un|notre|son|leur|nouveau|premier|second|deuxième|troisième)\s+fonds\b(?!\s+propres)"
+    r"|\bparticipations?\s+(?:dans|au\s+capital)\b|\binvestir\b|\binvesti\s+dans\b"
+    r"|\b(?:dans|de)\s+(?:la|le)\s+(?:startup|start-up|société|levée\s+de\s+fonds)\s+(?:de\s+)?(?-i:[A-Z])", re.I)
+_NOT_FUNDING_MONEY_FR = re.compile(
+    r"\b(?:chiffre\s+d['’]affaires|revenus?|ventes|commandes|contrats?|subventions?|prêts?|crédits?|dons?"
+    r"|économies|transactions|volume|projets?|biens|logements|primes?|cagnotte|collecte|marché|marchés)\b"
+    r"|(?-i:\bCA\b)", re.I)
+_FUNDING_EVIDENCE_FR = re.compile(
+    r"\b(?:levée\s+de\s+fonds|tour\s+de\s+table|financement|investisseurs?|men[ée]e?\s+par|aupr[èe]s\s+d"
+    r"|capital[\s-]risque|business\s+angels?|fonds\s+d['’]investissement|amor[çc]age)", re.I)
+_CLAUSE_END_FR_RE = re.compile(r",\s+(?:et|mais|puis|avant|après|depuis)\b|;|\s+et\s+(?:en|le|puis|depuis)\b", re.I)
+_MONTHS_FR = {"janvier": 1, "février": 2, "fevrier": 2, "mars": 3, "avril": 4, "mai": 5, "juin": 6,
+              "juillet": 7, "août": 8, "aout": 8, "septembre": 9, "octobre": 10, "novembre": 11,
+              "décembre": 12, "decembre": 12}
+_MONTH_DATE_FR_RE = re.compile(
+    r"\b(?:(\d{1,2})(?:er)?\s+)?(" + "|".join(_MONTHS_FR) + r")\s+(20\d{2})\b", re.I)
 
 
 def _sentence_date(sentence: str) -> str:
@@ -655,6 +701,10 @@ def _sentence_date(sentence: str) -> str:
     if m:
         month = _MONTHS[m.group(1).lower()[:3]]
         return f"{m.group(3)}-{month:02d}" + (f"-{int(m.group(2)):02d}" if m.group(2) else "")
+    m = _MONTH_DATE_FR_RE.search(sentence)
+    if m:
+        month = _MONTHS_FR[m.group(2).lower()]
+        return f"{m.group(3)}-{month:02d}" + (f"-{int(m.group(1)):02d}" if m.group(1) else "")
     m = _YEAR_RE.search(sentence)
     return m.group(1) if m else ""
 
@@ -715,15 +765,28 @@ def _amount_in(text: str) -> str:
     if m:
         return _amount(m.group(1), m.group(2), m.group(3))
     m = re.search(_AMOUNT_WORD, text, re.I)
-    return _amount(_CURRENCY[m.group(3).lower()], m.group(1), m.group(2)) if m else ""
+    if m:
+        return _amount(_CURRENCY[m.group(3).lower()], m.group(1), m.group(2))
+    # "2 M€", "1,5 million d'euros", "2 500 000 €": the euro after the number.
+    m = re.search(_AMOUNT_FR, text, re.I)
+    if not m:
+        return ""
+    number = re.sub(r"[\s\u00a0\u202f]", "", m.group(1))
+    if re.fullmatch(r"\d{1,3}(?:\.\d{3})+", number):
+        number = number.replace(".", "")        # "2.500.000 €"
+    elif "," in number:
+        number = number.replace(",", ".")       # a French decimal comma: "1,5 M€"
+    return _amount("€", number, m.group(2))
 
 
 def _round_name(text: str) -> str:
     text = re.sub(r"\s+", " ", text.lower())
-    if text.startswith("pre"):
+    if text.startswith(("pre", "pré")):
         return "Pre-seed"
-    if text.startswith("series"):
+    if re.match(r"s[ée]ries? ", text):
         return "Series " + text[-1].upper()
+    if text.startswith("amor"):
+        return "Seed"
     return text.capitalize()
 
 
@@ -747,21 +810,41 @@ def funding_round(html: str, domain: str = "", url: str = "") -> dict | None:
     led = re.compile(
         rf"^{owner}\s+(?P<rest>(?:{_AMOUNT}\s+)?{_ROUND}(?:\s+(?:round|funding|financing))?"
         rf"(?:\s+(?:was|is|has been))?\s+(?:led|co-led|closed|backed)\b{_CLAUSE}{{0,160}})", re.I)
+    # The same three shapes in French.
+    subject_fr = r"(?:nous|la\s+société|l['’]entreprise|la\s+start-?up" + (rf"|{spelled}\b" if spelled else "") + r")"
+    raised_fr = re.compile(
+        rf"^{_LEAD_IN_FR}{_ANNOUNCE_FR}?{subject_fr},?{_SUBJECT_AUX_FR}(?:\s+|(?<=['’])){_RAISE_VERB_FR}\b"
+        rf"(?P<rest>{_CLAUSE}{{0,160}})", re.I)
+    owner_fr = r"(?:notre|nos" + (rf"|la\s+{_RAISE_NOUN_FR}\s+de\s+{spelled}" if spelled else "") + r")"
+    announced_fr = re.compile(
+        rf"^{_LEAD_IN_FR}(?:{_ANNOUNCE_FR}|annonce\s+de\s+|nous\s+annonçons\s+)(?:la\s+clôture\s+de\s+)?"
+        rf"{owner_fr}\s+(?P<rest>(?:première\s+|nouvelle\s+)?(?:{_RAISE_NOUN_FR}|{_ROUND_FR}){_CLAUSE}{{0,160}})", re.I)
+    led_fr = re.compile(
+        rf"^{owner_fr}\s+(?P<rest>(?:première\s+)?{_RAISE_NOUN_FR}{_CLAUSE}{{0,60}}?\s+(?:a\s+été|est|vient\s+d['’]être)\s+"
+        rf"(?:menée?|co-menée?|bouclée?|clôturée?|réalisée?|finalisée?)\b{_CLAUSE}{{0,160}})", re.I)
     claims = []
     for sentence in _lines(html):
+        french = False
         m = raised.search(sentence) or announced.search(sentence) or led.search(sentence)
+        if not m:
+            m = raised_fr.search(sentence) or announced_fr.search(sentence) or led_fr.search(sentence)
+            french = m is not None
         if not m:
             continue
         rest = m.group("rest")
-        end = _CLAUSE_END_RE.search(rest)
+        end = (_CLAUSE_END_FR_RE if french else _CLAUSE_END_RE).search(rest)
         rest = rest[:end.start()] if end else rest
-        if _NOT_THEIR_RAISE.search(rest):
+        if (_NOT_THEIR_RAISE_FR if french else _NOT_THEIR_RAISE).search(rest):
             continue
-        rnd = re.search(rf"\b{_ROUND}", rest, re.I)
+        rnd = re.search(rf"\b{_ROUND_FR}", rest, re.I) if french else None
+        rnd = rnd or re.search(rf"\b{_ROUND}", rest, re.I)
         amount = _amount_in(rest)
         if not rnd:
-            plain = (m.groupdict().get("verb") or "").lower().startswith("rais") and amount[-1:] in ("M", "B")
-            if not amount or _NOT_FUNDING_MONEY.search(rest) or not (plain or _FUNDING_EVIDENCE.search(rest)):
+            verb = (m.groupdict().get("verb") or "").lower()
+            plain = verb.startswith(("lev", "lèv") if french else "rais") and amount[-1:] in ("M", "B")
+            money, evidence = ((_NOT_FUNDING_MONEY_FR, _FUNDING_EVIDENCE_FR) if french
+                               else (_NOT_FUNDING_MONEY, _FUNDING_EVIDENCE))
+            if not amount or money.search(rest) or not (plain or evidence.search(rest)):
                 continue
         when = _not_future(_sentence_date(sentence[:m.start("rest")] + rest))
         claims.append({"round": _round_name(rnd.group(1)) if rnd else "", "amount": amount, "date": when})
@@ -926,7 +1009,9 @@ class ProfileCollector:
                 t = re.sub(r"\s+", " ", m.group(2)).strip()
                 if re.search(r"\b(hiring|apply|position|opening|wanted|"
                              r"technician|installer|sales|manager|foreman|"
-                             r"estimator|crew|representative)\b", t, re.I):
+                             r"estimator|crew|representative|"
+                             r"recrute|postuler|poste|développeur|développeuse|ingénieur|"
+                             r"[hf]\s?/\s?[hf])\b", t, re.I):
                     if t.lower() not in [r.lower() for r in roles]:
                         roles.append(t)
                 if len(roles) >= 3:

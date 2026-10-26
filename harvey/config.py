@@ -18,6 +18,9 @@ from harvey.paths import PROJECT_ROOT
 
 logger = logging.getLogger("harvey.config")
 
+# Languages the startup presets can search in (icp.search_languages).
+SEARCH_LANGUAGES = ("en", "fr")
+
 
 class ConfigError(Exception):
     """Raised when Harvey's configuration is missing or invalid."""
@@ -75,6 +78,21 @@ class ICPConfig(BaseModel):
     # Each variant runs in every city alongside the industry itself, so the
     # estimate grows with it. Empty → each industry is its own one search.
     keyword_variants: dict[str, list[str]] = {}
+    # Languages the startup presets search in. A French startup announces
+    # "lève 2 M€", not "raises $2M", and its careers page says "recrutement".
+    # Each language adds its own searches, so ["en", "fr"] doubles the
+    # estimate. Supported: "en", "fr".
+    search_languages: list[str] = ["en"]
+
+    @field_validator("search_languages", mode="before")
+    @classmethod
+    def _known_languages(cls, v) -> list[str]:
+        langs = [str(x).strip().lower() for x in (v or []) if str(x).strip()] or ["en"]
+        unknown = [x for x in langs if x not in SEARCH_LANGUAGES]
+        if unknown:
+            raise ValueError(f"icp.search_languages: {', '.join(unknown)} isn't supported. "
+                             f"Use {', '.join(SEARCH_LANGUAGES)}.")
+        return list(dict.fromkeys(langs))
 
 
 class WarmupConfig(BaseModel):
