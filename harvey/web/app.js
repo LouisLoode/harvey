@@ -1860,8 +1860,10 @@ function renderDesk(items, i) {
       '<div class="body">' + escHtml(cur.body) + '</div>';
   // Cold email leaves with the footer underneath; show it as it will go out.
   // Not added again when the body already ends with it, as in the Sender.
-  const added = cur.kind === 'sequence' && !(cur.body || '').trimEnd().endsWith(_desk.footer)
-    ? _desk.footer : '';
+  // Each draft's own footer: its opt-out line is in the draft's language.
+  const itemFooter = cur.footer !== undefined ? cur.footer : _desk.footer;
+  const added = cur.kind === 'sequence' && !(cur.body || '').trimEnd().endsWith(itemFooter)
+    ? itemFooter : '';
   const footer = added
     ? '<div class="desk-footer" title="Added when it sends (compliance in harvey.yaml)">' +
         escHtml(added) + '</div>' : '';

@@ -242,6 +242,26 @@ def site_name_from_html(html: str, domain: str) -> str:
                default="")
 
 
+# A news headline, not a name: "Webyn lève 2,7 millions d'euros pour...",
+# "Acme raises $12M Series A". The name is what comes before the verb.
+_HEADLINE = re.compile(
+    r"(?i)^(?P<name>.{2,40}?)\s+(?:lève|lèvent|a\s+levé|boucle|bouclent|annonce|finalise|réalise|"
+    r"raises?|raised|secures?|closes?|announces?|lands?|bags?|nets?|completes?)\b")
+
+
+def headline_name(name: str, domain: str = "") -> str:
+    """The company's name inside a headline used as its name; anything else
+    comes back as it was. Falls back to the domain's name when the words
+    before the verb aren't the company's."""
+    m = _HEADLINE.match((name or "").strip())
+    if not m:
+        return name
+    short = m.group("name").strip(" ,:;-–—|")
+    if domain and not name_matches_domain(short, domain):
+        return name_from_domain(domain)
+    return short
+
+
 def business_name(title: str, domain: str) -> str:
     """The business's name from a SERP title, or one derived from its domain."""
     stem = _domain_stem(domain)
@@ -253,8 +273,19 @@ def business_name(title: str, domain: str) -> str:
         # Prefer the segment with the most distinctive domain evidence rather
         # than the first incidental substring. Stable ties preserve title order.
         if matches:
-            return max(matches, key=lambda seg: _segment_domain_evidence(seg, stem))
+            return headline_name(max(matches, key=lambda seg: _segment_domain_evidence(seg, stem)), domain)
     return name_from_domain(domain) if stem else title
+
+
+def site_root(url: str, domain: str = "") -> str:
+    """A company's website as its homepage: a search that found it on a blog
+    post or a careers page gives that page, which stays the source_url."""
+    parsed = urlparse(url or "")
+    if not parsed.scheme or not parsed.netloc:
+        return url
+    if parsed.path.strip("/") or parsed.query:
+        return f"{parsed.scheme}://{parsed.netloc}"
+    return url
 
 
 def is_junk(domain: str, name: str = "") -> bool:
@@ -1618,7 +1649,7 @@ async def _upsert(state, biz: Business, query: DiscoveryQuery) -> tuple[str, boo
     company = Company(
         name=biz.name,
         domain=biz.domain,
-        website=biz.website,
+        website=site_root(biz.website, biz.domain),
         phone=biz.phone,
         industry=biz.category or query.term,
         location=biz.location or query.location,

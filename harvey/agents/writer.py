@@ -31,17 +31,33 @@ logger = logging.getLogger("harvey.writer")
 
 # writer.first_email: offer. Overrides rules 11 and 15 of prompts/writer.md
 # for the first email, the way a service is sold: who is writing, and why them.
-OFFER_FIRST_EMAIL = """FIRST EMAIL: OFFER (overrides rules 11 and 15 for the first email).
-The reader doesn't know you. Selling a service, they need to know in five
-seconds who is writing and why them, now:
-- One sentence on who you are and what you do for companies like theirs, from
-  the product info: your role and one concrete proof point. No feature list,
-  no pricing, no link.
-- Tie it to the one specific observation from the FACTS: why this matters
-  for them now.
-- End with one low-effort question about a concrete offer from the product
-  info (its entry offer, e.g. a short call), answerable in one line.
-- Still under 75 words."""
+OFFER_FIRST_EMAIL = """FIRST EMAIL: OFFER (overrides rules 6, 11 and 15 for the first email).
+Four short sentences at most, in this order:
+1. The trigger: one observable fact from the FACTS that shows you looked
+   ("you've been hiring a CTO since September", "you announced a raise in August").
+2. The problem that fact implies, in the reader's words, not yours. A
+   non-technical founder doesn't think in frameworks; they think "I can't tell
+   whether what my agency bills me is right". Name a technology only when the
+   reader is technical (a CTO or a tech lead).
+3. Half a sentence on who you are, from the product info. Not a CV: no years
+   of experience, no list of clients.
+4. One question that asks for a reply, not a meeting, with an easy way to say
+   no ("worth a quick exchange, or not a topic for you right now?"). Never ask
+   for a call, a visio or an amount of time in this email.
+Pick the angle that fits their situation. When the product info lists offers by
+situation, use the one the FACTS point to. Never offer them something they are
+past: a CTO to a company that has one, a first version to a company that has
+raised a round or has a product on the market.
+It must fit on a phone screen: under 60 words. Never start with yourself."""
+
+# writer.first_email: offer. Follow-ups that each bring something new.
+OFFER_FOLLOW_UPS = (
+    "- Email 2: 4 days later. Something new: a short case or proof point from the product\n"
+    "  info, or a second observation. Never \"just following up\" or a recap of email 1.\n"
+    "  Under 60 words, one question that asks for a reply.\n"
+    "- Email 3: 6 days after that. Under 40 words. An easy way out (\"no worries if it's\n"
+    "  not a topic\"), no guilt, no \"one last time\"."
+)
 
 # writer.critique: the review call's rubric, best first.
 CRITIQUE_RUBRIC = """1. Specific: built on one real fact from the FACTS that matters to them now.
@@ -468,8 +484,8 @@ Return ONLY JSON: {{"best": <draft number>, "why": "<one sentence>"}}"""
 
         lang_rule = f"\n{FRENCH_RULES}\n" if language == "fr" else ""
         offer = self._writer_setting("first_email", "observation") == "offer"
-        first_rule = ("Under 75 words. Who you are and what you offer in one sentence, tied to\n"
-                      "  one specific observation from the FACTS, then one question (FIRST EMAIL: OFFER)."
+        first_rule = ("Under 60 words, four sentences at most: the trigger, their problem in their\n"
+                      "  words, half a sentence on you, one question asking for a reply (FIRST EMAIL: OFFER)."
                       if offer else
                       "Under 75 words. One specific observation from the FACTS above, one\n"
                       "  question. No pitch, no product name.")
@@ -571,10 +587,15 @@ Pricing: {self.config.product.pricing}"""
         # note about one person ("met her at the expo") must never reach it.
         prompt += await self._feedback_block([])
         prompt += self._style_blocks()
-        email1_rule = ("Email 1: Who you are and what you offer in one sentence, tied to something "
-                       "specific to these prospects, then one question (FIRST EMAIL: OFFER). Under 75 words."
-                       if self._writer_setting("first_email", "observation") == "offer" else
+        offer = self._writer_setting("first_email", "observation") == "offer"
+        email1_rule = ("Email 1: the trigger, their problem in their words, half a sentence on you, "
+                       "one question asking for a reply (FIRST EMAIL: OFFER). Under 60 words."
+                       if offer else
                        "Email 1: Personalized cold observation + one question. Under 75 words. No pitch.")
+        follow_ups = OFFER_FOLLOW_UPS if offer else (
+            "- Email 2: Follow-up 3 days later. Different angle, one concrete proof point. Under 75 words.\n"
+            "- Email 3: Break-up email 4 days after that. Under 40 words. Gracious, not guilt-tripping.")
+        delays = (4, 6) if offer else (3, 4)
 
         prompt += f"""
 
@@ -585,8 +606,7 @@ Write a 3-email cold outreach sequence for prospects like these:
 
 Requirements:
 - {email1_rule}
-- Email 2: Follow-up 3 days later. Different angle, one concrete proof point. Under 75 words.
-- Email 3: Break-up email 4 days after that. Under 40 words. Gracious, not guilt-tripping.
+{follow_ups}
 {merge_rule}
 - Never be pushy or salesy. Be consultative and value-driven.
 - Subject lines: lowercase, 2-5 words.
@@ -596,8 +616,8 @@ Requirements:
 Return ONLY a JSON array (no markdown fences, no commentary):
 [
   {{"step": 1, "subject": "...", "body": "...", "delay_days": 0}},
-  {{"step": 2, "subject": "...", "body": "...", "delay_days": 3}},
-  {{"step": 3, "subject": "...", "body": "...", "delay_days": 4}}
+  {{"step": 2, "subject": "...", "body": "...", "delay_days": {delays[0]}}},
+  {{"step": 3, "subject": "...", "body": "...", "delay_days": {delays[1]}}}
 ]"""
 
         result = await self.brain.think_json(

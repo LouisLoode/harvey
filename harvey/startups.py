@@ -141,4 +141,7 @@ async def hiring_facts(state, company_id: str, today: date | None = None) -> lis
     if lead and lead.get("value_num") == 1:
         facts.append("- Their team page lists founders but nobody in a technical role "
                      "(team pages are often incomplete: don't claim they have no one)")
+    elif lead and lead.get("value_num") == 0 and lead.get("value_text"):
+        facts.append(f"- They have a technical lead: their team page lists a {lead['value_text']}. "
+                     "Don't offer to be their CTO or to build their first version")
     return facts

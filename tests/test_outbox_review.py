@@ -234,3 +234,23 @@ def test_a_closed_role_shows_as_not_hiring_to_the_reviewer(client):
     signals = client.get("/api/outbox").json()["pending"][0]["context"]["signals"]
     hiring = [v for k, v in signals.items() if "hiring" in k.lower() or k == "HIRING_ROLE"]
     assert hiring == ["no"]
+
+
+async def _seed_french(db_path):
+    state = StateManager(str(db_path))
+    await state.init_db()
+    company_id = await state.add_company(Company(name="Lumenhexa", domain="lumenhexa.example"))
+    prospect_id = await state.add_prospect(Prospect(
+        first_name="Claire", last_name="Duval", email="claire@lumenhexa.example", title="Présidente",
+        email_status="verified", company="Lumenhexa", company_id=company_id))
+    await state.add_outbox_item(
+        prospect_id=prospect_id, to_email="claire@lumenhexa.example", subject="votre recrutement",
+        body="Bonjour Claire, vous cherchez un CTO depuis septembre. Qui vérifie ce que votre agence livre ?",
+        send_at="2026-01-01T00:00:00", status="pending_review")
+
+
+def test_each_draft_shows_the_footer_in_its_own_language(client):
+    from harvey.config import DEFAULT_OPT_OUT_LINE_FR
+    asyncio.run(_seed_french(client.db_path))
+    item = client.get("/api/outbox").json()["pending"][0]
+    assert item["footer"].endswith(DEFAULT_OPT_OUT_LINE_FR)

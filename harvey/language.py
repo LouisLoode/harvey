@@ -37,7 +37,10 @@ FRENCH_RULES = """LANGUAGE: write this email in French — subject and body.
   to another; not translated English.
 - No stock French cold-email phrases: "Je me permets de vous contacter",
   "N'hésitez pas à", "Dans un monde où", "Je reviens vers vous", "Suite à",
-  "Cordialement" as a closing, "J'espère que vous allez bien".
+  "Cordialement" as a closing, "J'espère que vous allez bien", "Je me permets de
+  vous relancer", "Suite à notre échange" when there was none.
+- An easy way out reads naturally in French: "ça vaut un échange rapide, ou ce
+  n'est pas un sujet chez vous ?"
 - Greeting: "Bonjour <first name>," ("Bonjour," for a company's general inbox).
 - Keep the same rules as above: short, one observation, one question, no pitch.
 - French punctuation: a space before ? ! : ; and « » for quotes."""

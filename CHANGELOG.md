@@ -227,6 +227,14 @@ minor versions can still change behaviour.
 
 ### Changed
 
+- **The offer-style first email asks for a reply, not a meeting.** Four
+  short sentences at most: the trigger, the problem it implies in the
+  reader's words (no stack talk to a non-technical reader), half a sentence
+  on who is writing, and one question with an easy way to say no. Under 60
+  words, never a call or a length of time. It picks the offer that fits the
+  company when the product knowledge lists offers by situation, and never
+  offers what they are past. Follow-ups wait 4 and 6 days and each brings
+  something new.
 - **The contacts backfill starts with buying intent.** Companies showing the
   most intent signals (hiring, a role open for weeks, no tech lead, your
   stack, remote, funding, an accelerator, a registry record) are visited
@@ -271,6 +279,15 @@ minor versions can still change behaviour.
 
 ### Fixed
 
+- **A company with a CTO was offered a CTO.** `NO_TECH_LEADER` at 0 (the
+  team page lists a technical lead) never reached the writer; it now does,
+  with that lead's title.
+- **French drafts showed the English footer in the Outbox.** Each draft now
+  shows the footer in its own language, as it will be sent.
+- **News headlines as company names.** A funding search could name a company
+  "Acme lève 2 M€ pour..." and give the article as its website. The name is
+  now what comes before the verb, the website the homepage (the article stays
+  the source), and existing rows are repaired on start.
 - **The writer was given a search string as the company's industry.** A
   discovery preset stores its search as the industry, and it reached the
   writer's facts and campaign names as such ('B2B SaaS ("we raised" OR
