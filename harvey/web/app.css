@@ -467,6 +467,16 @@ th {
   white-space: nowrap; position: sticky; top: 0; background: var(--surface); z-index: 1;
 }
 th.num { text-align: right; }
+/* A sortable column: the header is a button; ▲ ▼ on the sorted one. */
+.th-sort {
+  all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 4px;
+  font: inherit; color: inherit; border-radius: var(--r-sm);
+}
+.th-sort .sort-ind { font-size: 10px; color: var(--text-3); opacity: .55; }
+.th-sort.on { color: var(--text); }
+.th-sort.on .sort-ind { opacity: 1; color: var(--text-2); }
+.th-sort:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (hover: hover) { .th-sort:hover { color: var(--text); } .th-sort:hover .sort-ind { opacity: 1; } }
 td { padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: middle; }
 tbody tr:last-child td { border-bottom: none; }
 tbody tr { transition: background-color 100ms ease; }
@@ -510,6 +520,7 @@ tr:focus-within .row-action { opacity: 1; }
 .segmented button.on { background: var(--surface); color: var(--text); box-shadow: var(--shadow-border); }
 @media (hover: hover) { .segmented button:not(.on):hover { color: var(--text); } }
 .table-foot { font-size: var(--fs-caption); color: var(--text-3); padding: var(--sp-3) 2px 0; }
+.table-foot .pager { display: inline-flex; gap: var(--sp-2); margin-left: var(--sp-3); vertical-align: middle; }
 
 /* ── Today: the queue, the steps, the timeline ───────────────── */
 

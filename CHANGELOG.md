@@ -9,6 +9,14 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **Contacts: sort, filter by email, and pages, done by the database.**
+  Click a column (name, company, email, score, status, added) to sort it;
+  filter by email (verified, catch-all, unverified, invalid) on top of the
+  status filter; search ignores case and accents. The new `/api/contacts`
+  sorts, filters, searches and pages in SQL, so the page holds 50 contacts
+  at a time however long the list gets, and the counts on each filter
+  honour the search and the other filter.
+
 - **First emails for selling a service.** `writer.first_email: offer` lets
   the first email say who is writing and what they do for the reader, tied
   to one observation and ending on a concrete low-effort offer (the default,

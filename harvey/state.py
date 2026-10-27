@@ -10,6 +10,7 @@ upgrade cleanly in place.
 """
 
 import json
+import unicodedata
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, date, timedelta, timezone
@@ -515,7 +516,44 @@ MIGRATIONS: list[str] = [
     -- knows about the recipient. Empty until then.
     ALTER TABLE prospects ADD COLUMN timezone TEXT DEFAULT '';
     """,
+    # ── v15: the Contacts tab sorts and pages in SQL ──
+    """
+    CREATE INDEX IF NOT EXISTS idx_prospects_created ON prospects(created_at);
+    CREATE INDEX IF NOT EXISTS idx_prospects_score ON prospects(score, created_at);
+    """,
 ]
+
+# The Contacts tab: filter groups, email statuses and sort columns, all
+# resolved here so the browser only ever gets one page of contacts.
+CONTACT_STATUS_GROUPS = {
+    "todo": ("new", "queued"),
+    "contacted": ("contacted",),
+    "replied": ("replied", "interested", "meeting"),
+}
+CONTACT_KNOWN_STATUSES = tuple(s for group in CONTACT_STATUS_GROUPS.values() for s in group)
+CONTACT_EMAIL_STATUSES = ("verified", "risky", "guess", "invalid")
+# Rows predating email_status carry only the legacy boolean; no email is "".
+_EMAIL_STATUS_SQL = ("(CASE WHEN email = '' THEN '' ELSE COALESCE(NULLIF(email_status, ''), "
+                     "CASE WHEN email_verified THEN 'verified' ELSE 'guess' END) END)")
+_STATUS_GROUP_SQL = ("(CASE WHEN status IN ('new','queued') THEN 'todo' "
+                     "WHEN status = 'contacted' THEN 'contacted' "
+                     "WHEN status IN ('replied','interested','meeting') THEN 'replied' ELSE 'closed' END)")
+# column -> (SQL, is text). Text sorts accent- and case-blind through fold().
+CONTACT_SORTS = {
+    "name": ("fold(TRIM(first_name || ' ' || last_name))", True),
+    "company": ("fold(company)", True),
+    "email": ("fold(email)", True),
+    "score": ("score", False),
+    "status": ("(CASE status WHEN 'new' THEN 1 WHEN 'queued' THEN 2 WHEN 'contacted' THEN 3 "
+               "WHEN 'replied' THEN 4 WHEN 'interested' THEN 5 WHEN 'meeting' THEN 6 ELSE 7 END)", False),
+    "added": ("created_at", False),
+}
+
+
+def _fold(value) -> str:
+    """"Élodie" → "elodie": for sorting and searching names the way people read them."""
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    return text.encode("ascii", "ignore").decode().lower()
 
 # Signals that move a company up the contacts backfill: it is hiring for a
 # role you care about, struggling to fill it, has no technical lead, uses your
@@ -1391,6 +1429,90 @@ class StateManager:
             )
             await db.commit()
             return cursor.rowcount
+
+    async def contacts_page(self, sort: str = "added", direction: str = "desc",
+                            status: str = "all", email: str = "all", query: str = "",
+                            offset: int = 0, limit: int = 50) -> dict:
+        """One page of the Contacts tab, sorted, filtered and searched in SQL.
+
+        ``status`` is a CONTACT_STATUS_GROUPS key, "closed" (anything past
+        them) or "all"; ``email`` one of CONTACT_EMAIL_STATUSES or "all";
+        ``query`` matches name, company, email and title, ignoring case and
+        accents. Returns the page's rows, how many match, how many contacts
+        there are at all, and the counts each filter button shows (each set
+        honouring the search and the other filter).
+        """
+        sort = sort if sort in CONTACT_SORTS else "added"
+        direction = "ASC" if direction == "asc" else "DESC"
+        limit = max(1, min(int(limit), 200))
+        offset = max(0, int(offset))
+
+        def status_cond():
+            if status in CONTACT_STATUS_GROUPS:
+                values = CONTACT_STATUS_GROUPS[status]
+                return f"status IN ({','.join('?' * len(values))})", list(values)
+            if status == "closed":
+                values = CONTACT_KNOWN_STATUSES
+                return f"status NOT IN ({','.join('?' * len(values))})", list(values)
+            return "1", []
+
+        def email_cond():
+            if email in CONTACT_EMAIL_STATUSES:
+                return f"{_EMAIL_STATUS_SQL} = ?", [email]
+            return "1", []
+
+        def query_cond():
+            q = _fold(query).strip()
+            if not q:
+                return "1", []
+            pattern = "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+            return ("fold(first_name || ' ' || last_name || ' ' || company || ' ' || email || ' ' || title) "
+                    "LIKE ? ESCAPE '\\'"), [pattern]
+
+        (s_sql, s_args), (e_sql, e_args), (q_sql, q_args) = status_cond(), email_cond(), query_cond()
+        expr, is_text = CONTACT_SORTS[sort]
+        # Missing values last whichever the direction, then newest first on ties.
+        missing = f"({expr} IS NULL OR {expr} = '')" if is_text else f"({expr} IS NULL)"
+        order = f"{missing} ASC, {expr} {direction}"
+        if sort == "status":
+            order += ", status ASC"
+        order += ", created_at DESC, id"
+
+        async with self._connect() as db:
+            await db.create_function("fold", 1, _fold, deterministic=True)
+            db.row_factory = aiosqlite.Row
+
+            async def one(sql, args):
+                async with db.execute(sql, args) as cursor:
+                    return (await cursor.fetchone())[0]
+
+            async def groups(sql, args):
+                async with db.execute(sql, args) as cursor:
+                    return {row[0]: row[1] for row in await cursor.fetchall()}
+
+            where = f"{s_sql} AND {e_sql} AND {q_sql}"
+            args = s_args + e_args + q_args
+            total = await one(f"SELECT COUNT(*) FROM prospects WHERE {where}", args)
+            async with db.execute(
+                f"SELECT * FROM prospects WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
+                args + [limit, offset],
+            ) as cursor:
+                rows = [dict(r) for r in await cursor.fetchall()]
+            by_status = await groups(
+                f"SELECT {_STATUS_GROUP_SQL}, COUNT(*) FROM prospects WHERE {e_sql} AND {q_sql} GROUP BY 1",
+                e_args + q_args)
+            by_email = await groups(
+                f"SELECT {_EMAIL_STATUS_SQL}, COUNT(*) FROM prospects WHERE {s_sql} AND {q_sql} GROUP BY 1",
+                s_args + q_args)
+            everyone = await one("SELECT COUNT(*) FROM prospects", [])
+
+        status_counts = {key: by_status.get(key, 0) for key in (*CONTACT_STATUS_GROUPS, "closed")}
+        status_counts["all"] = sum(by_status.values())
+        email_counts = {key: by_email.get(key, 0) for key in CONTACT_EMAIL_STATUSES}
+        email_counts["all"] = sum(by_email.values())
+        return {"items": rows, "total": total, "everyone": everyone, "offset": offset,
+                "limit": limit, "sort": sort, "dir": direction.lower(),
+                "counts": {"status": status_counts, "email": email_counts}}
 
     async def colleagues_in_outreach(self, prospect_id: str) -> int:
         """How many people at this prospect's company Harvey has already

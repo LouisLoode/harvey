@@ -918,6 +918,29 @@ async def get_prospects():
     return rows
 
 
+@app.get("/api/contacts")
+async def get_contacts(sort: str = "added", dir: str = "desc", status: str = "all",
+                       email: str = "all", q: str = "", offset: int = 0, limit: int = 50):
+    """One page of the Contacts tab, sorted, filtered and searched in the
+    database: the page never loads the whole list, however long it gets."""
+    try:
+        state = _state()
+        await state.init_db()
+        page = await state.contacts_page(sort=sort, direction=dir, status=status, email=email,
+                                         query=q[:200], offset=offset, limit=limit)
+        ids = [r["id"] for r in page["items"]]
+        # Someone whose opt-out was undone keeps a way to see what happened.
+        undone = {r["pid"] for r in await query_db(
+            "SELECT DISTINCT json_extract(details_json, '$.prospect_id') AS pid FROM actions "
+            "WHERE action_type = 'opt_out_undone' AND json_valid(details_json) "
+            f"AND json_extract(details_json, '$.prospect_id') IN ({_in(ids)})", tuple(ids))} if ids else set()
+        for r in page["items"]:
+            r["opt_out_undone"] = r["id"] in undone
+        return page
+    except Exception as e:
+        return {"error": str(e)}
+
+
 def _state():
     from harvey.state import StateManager
     return StateManager(db_path=str(DB_PATH))
