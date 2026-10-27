@@ -142,6 +142,13 @@ def test_dmarc_and_dkim(monkeypatch):
     assert d.check_dkim("b.com", "s1").status == d.FAIL
 
 
+def test_ovh_dkim_selectors_are_tried(monkeypatch):
+    # OVHcloud mailboxes publish their keys at ovhmo-selector-1 and -2.
+    monkeypatch.setattr(d, "_txt", _txt({"ovhmo-selector-2._domainkey.a.com": ["v=DKIM1; k=rsa; p=MIIBIjANBg"]}))
+    check = d.check_dkim("a.com")
+    assert check.status == d.OK and "ovhmo-selector-2" in check.detail
+
+
 def test_blocklist_refusal_is_not_a_listing(monkeypatch):
     answers = {"a.com.dbl.spamhaus.org": ["127.255.255.254"],
                "a.com.multi.surbl.org": ["127.0.0.2"]}
