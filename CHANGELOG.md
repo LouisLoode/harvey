@@ -338,6 +338,13 @@ minor versions can still change behaviour.
 
 ### Fixed
 
+- **Company names kept a page's wrapping.** A name could arrive as
+  "[Communiqué de Presse] Acme", "Press release: Acme" or "Acme, the data
+  API for verified records" (a tagline after a comma), and reach emails
+  through `{{company}}`. Press-release tags and prefixes now come off, and a
+  tagline is cut when the domain backs up the name before it (never "Smith,
+  Jones & Co"). Search titles and homepage names are cleaned the same way,
+  and existing names, with their prospects' copies, are repaired on start.
 - **A company with a CTO was offered a CTO.** `NO_TECH_LEADER` at 0 (the
   team page lists a technical lead) never reached the writer; it now does,
   with that lead's title.

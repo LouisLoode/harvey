@@ -247,8 +247,9 @@ def site_name_from_html(html: str, domain: str) -> str:
     matches = [seg for text in candidates
                for seg in (x.strip(" ,.-") for x in _TITLE_SEPARATORS.split(text))
                if seg and len(seg) <= 60 and _segment_matches_domain(seg, stem)]
-    return max(matches, key=lambda seg: (_segment_domain_evidence(seg, stem), len(seg)),
+    best = max(matches, key=lambda seg: (_segment_domain_evidence(seg, stem), len(seg)),
                default="")
+    return clean_company_name(best, domain) if best else ""
 
 
 # A news headline, not a name: "Webyn lève 2,7 millions d'euros pour...",
@@ -271,6 +272,42 @@ def headline_name(name: str, domain: str = "") -> str:
     return short
 
 
+# A label a page puts around a name, never part of it: "[Communiqué de
+# Presse] Acme", "Acme (press release)", "Press release: Acme".
+_NAME_TAG = re.compile(r"^\s*[\[(][^\])]{2,40}[\])]\s*|\s*[\[(][^\])]{2,40}[\])]\s*$")
+_NAME_PREFIX = re.compile(
+    r"(?i)^\s*(?:communiqu[ée]s?(?:\s+de\s+presse)?|press\s+release|cp|exclusi(?:f|ve)|breaking|"
+    r"interview|tribune|portrait|actualit[ée]s?|news|update)\s*[:|–—-]\s*")
+
+
+def _reads_like_tagline(text: str) -> bool:
+    """"B2B Data Enrichment API for Verified Records", "le média de la
+    performance commerciale": three words or more, one of them lower-case.
+    Not "Jones & Co"."""
+    words = text.split()
+    return len(words) >= 3 and any(w[:1].islower() for w in words if w not in ("&", "and", "et"))
+
+
+def clean_company_name(name: str, domain: str = "") -> str:
+    """A company's name without what a page wraps around it: a press-release
+    tag, a tagline after a comma ("Acme, the data API for..."), or a news
+    headline ("Acme lève 2 M€..."). The tagline is cut only when the domain
+    backs up the part before it; a name that would be left empty comes back
+    as it was."""
+    text = (name or "").strip()
+    for _ in range(3):      # tags stack: "[CP] [Exclusif] Acme"
+        stripped = _NAME_PREFIX.sub("", _NAME_TAG.sub("", text)).strip(" :;|–—-")
+        if stripped == text:
+            break
+        text = stripped
+    if not text:
+        return name
+    head, sep, tail = text.partition(", ")
+    if sep and domain and name_matches_domain(head, domain) and _reads_like_tagline(tail):
+        text = head
+    return headline_name(text, domain)
+
+
 def business_name(title: str, domain: str) -> str:
     """The business's name from a SERP title, or one derived from its domain."""
     stem = _domain_stem(domain)
@@ -282,7 +319,7 @@ def business_name(title: str, domain: str) -> str:
         # Prefer the segment with the most distinctive domain evidence rather
         # than the first incidental substring. Stable ties preserve title order.
         if matches:
-            return headline_name(max(matches, key=lambda seg: _segment_domain_evidence(seg, stem)), domain)
+            return clean_company_name(max(matches, key=lambda seg: _segment_domain_evidence(seg, stem)), domain)
     return name_from_domain(domain) if stem else title
 
 
