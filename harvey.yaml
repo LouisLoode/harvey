@@ -102,10 +102,10 @@ channels:
 usage:
   max_daily_claude_percent: 80
   heartbeat_interval_minutes: 15
-  quiet_hours:
-    start: "22:00"
-    end: "07:00"
-    timezone: "America/New_York"
+  # quiet_hours:
+  #   start: "22:00"
+  #   end: "07:00"
+  #   timezone: "America/New_York"
     # days: [mon, tue, wed, thu, fri]   # the days quiet hours apply (default:
     #                                  # every day). Quiet 08:00-20:00 on weekdays
     #                                  # keeps Harvey's work to nights and weekends.
