@@ -90,8 +90,9 @@ async def test_discovery_leaves_out_what_the_icp_excludes(state, monkeypatch):
     config = config.model_copy(update={"icp": config.icp.model_copy(
         update={"exclude_keywords": ["cabinet de recrutement"]})})
     report = await D.run_discovery(state, config, "fake", [D.DiscoveryQuery(term="saas", location="Toulouse")])
-    assert report.excluded == 1 and report.new_companies == 1
-    assert report.as_dict()["excluded"] == 1
+    assert report.icp_excluded == 1 and report.new_companies == 1
+    assert report.as_dict()["icp_excluded"] == 1
+    assert report.excluded == 0          # do-not-contact skips are counted apart
     assert await state.get_company_by_domain("talentrive.example") is None
 
 
