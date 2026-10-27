@@ -128,3 +128,22 @@ async def test_a_summary_without_the_new_count_keeps_the_old_rule():
     # Callers that build their own summary (older tests, scripts) still work.
     summary = {"prospects": {"new": 3}, "draft_campaigns": 0, "open_conversations": 0}
     assert await decide_next_action(None, None, CONFIG, summary=summary) == "write_campaign"
+
+
+@pytest.mark.asyncio
+async def test_prospects_held_by_the_company_cap_lead_back_to_prospecting(state):
+    # With contacts_per_company: 1, a second founder at a company already
+    # written to stays 'new' and the Writer skips them. Counting them chose
+    # write_campaign every cycle with nothing to write, and Scout never ran.
+    capped = SimpleNamespace(channels=SimpleNamespace(email=SimpleNamespace(
+        provider="gmail", require_approval=True, contacts_per_company=1)))
+    await state.add_prospect(Prospect(
+        first_name="Ann", last_name="Doe", title="Founder", company="Acme",
+        email="ann@acme.test", email_status="verified", status="queued"))
+    await add(state, 1, "bob@acme.test", "verified")
+    assert await state.count_writable_prospects() == 1
+    assert await state.count_writable_prospects(contacts_per_company=1) == 0
+    assert await state.count_writable_prospects(contacts_per_company=2) == 1
+    assert await decide_next_action(None, state, capped) == "prospect"
+    await add(state, 2, "cy@other.test", "verified")   # a company with room
+    assert await decide_next_action(None, state, capped) == "write_campaign"

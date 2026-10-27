@@ -547,6 +547,11 @@ def compliance_footer_lines(config, language: str = "en") -> list[str]:
     return [line for line in (compliance.postal_address.strip(), opt_out) if line]
 
 
+def company_contact_cap(config) -> int:
+    """channels.email.contacts_per_company (0 = no limit), on any config."""
+    return int(getattr(config.channels.email, "contacts_per_company", 0) or 0)
+
+
 def compliance_notice(config) -> str:
     """A plain-language warning when cold email goes out without a postal
     address, or "". Sending isn't held for it: this is the nudge."""

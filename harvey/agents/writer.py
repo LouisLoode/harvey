@@ -15,7 +15,7 @@ import re
 from datetime import datetime, timezone
 
 from harvey.brain import SKILLS_DIR, Brain
-from harvey.config import HarveyConfig
+from harvey.config import HarveyConfig, company_contact_cap
 from harvey.humanize import humanize, humanizer_enabled
 from harvey.integrations.mail_provider import NATIVE_PROVIDERS
 from harvey.models.campaign import Campaign, EmailStep
@@ -134,7 +134,7 @@ class Writer:
             return
 
         # Only so many people per company at a time (contacts_per_company).
-        cap = int(getattr(self.config.channels.email, "contacts_per_company", 0) or 0)
+        cap = company_contact_cap(self.config)
         if cap:
             prospects_with_email = await self._within_company_cap(prospects_with_email, cap)
             if not prospects_with_email:

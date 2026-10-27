@@ -198,7 +198,17 @@ def cmd_status(args):
     async def _status():
         state = StateManager()
         await state.init_db()
-        summary = await state.get_state_summary()
+        from harvey.config import company_contact_cap, compliance_notice, load_config, sending_notice
+        loaded = None
+        try:
+            loaded = load_config()
+            notice = sending_notice(loaded)
+            address_notice = compliance_notice(loaded)
+        except Exception:
+            # Status must still print when harvey.yaml is broken; that's
+            # when people run it. The --check path reports config errors.
+            notice = address_notice = ""
+        summary = await state.get_state_summary(company_contact_cap(loaded) if loaded else 0)
 
         print("\n  Harvey Pipeline Status")
         print("  " + "=" * 40)
@@ -215,16 +225,6 @@ def cmd_status(args):
         by_provider = summary.get("usage_today_by_provider", {})
         print(f"  Claude calls today:   {by_provider.get('claude', summary['usage_today'])}")
         print(f"  Codex calls today:    {by_provider.get('codex', 0)}")
-        from harvey.config import compliance_notice, load_config, sending_notice
-        loaded = None
-        try:
-            loaded = load_config()
-            notice = sending_notice(loaded)
-            address_notice = compliance_notice(loaded)
-        except Exception:
-            # Status must still print when harvey.yaml is broken; that's
-            # when people run it. The --check path reports config errors.
-            notice = address_notice = ""
         from harvey.main import unusable_backlog_notice
         backlog = unusable_backlog_notice(summary)
         if backlog:

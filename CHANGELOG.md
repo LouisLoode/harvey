@@ -345,6 +345,12 @@ minor versions can still change behaviour.
 
 ### Fixed
 
+- **Prospecting stalled behind the per-company cap.** With
+  `contacts_per_company` set, a second person at a company already written
+  to stays new and the Writer skips them, but the heartbeat still counted
+  them as ready to write. It chose `write_campaign` every cycle, wrote
+  nothing, and never went back to finding emails. The count now applies the
+  same cap, in the heartbeat and in `harvey status`.
 - **`harvey warmup` missed DKIM on OVHcloud mailboxes.** OVHcloud publishes
   its keys at `ovhmo-selector-1` and `ovhmo-selector-2`, which weren't among
   the selectors tried, so a signed domain showed "No key at any common

@@ -12,7 +12,7 @@ from harvey.brain import Brain
 from harvey.sending_mode import sync_sending_mode
 from harvey.config import (
     ConfigError, load_config, load_env, HarveyConfig, legacy_sending_held, sending_notice,
-    compliance_notice, send_window_of, WEEKDAYS,
+    compliance_notice, send_window_of, WEEKDAYS, company_contact_cap,
 )
 from harvey.integrations.mail_provider import NATIVE_PROVIDERS
 from harvey.pidfile import (
@@ -164,10 +164,11 @@ async def decide_next_action(
     every cycle and removes a fragile LLM string-parsing step.
     """
     if summary is None:
-        summary = await state.get_state_summary()
+        summary = await state.get_state_summary(company_contact_cap(config))
 
     # Only prospects the Writer can draft for trigger writing: one with a
-    # guessed email stays 'new' for good, and counting it starved Scout.
+    # guessed email stays 'new' for good, and counting it starved Scout. So
+    # did one held back by contacts_per_company.
     new_prospects, writable = _new_counts(summary)
     draft_campaigns = summary.get("draft_campaigns", 0) or 0
     open_conversations = summary.get("open_conversations", 0) or 0
@@ -393,7 +394,7 @@ async def heartbeat(stop_event: asyncio.Event | None = None):
                 action = "quiet_hours_send"
             else:
                 logger.info("Checking pipeline state...")
-                summary = await state.get_state_summary()
+                summary = await state.get_state_summary(company_contact_cap(config))
                 action = await decide_next_action(brain, state, config, summary=summary)
 
             # 5. Execute — run independent agents in parallel where possible
