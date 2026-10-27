@@ -649,20 +649,22 @@ class StateManager:
 
     @staticmethod
     async def _clean_headline_companies(db) -> None:
-        """Discovery once took a news headline for a company's name ("Acme
-        lève 2 M€ pour...", "Acme raises $12M") and the article for its
-        website. Such names get the company's name back (its prospects' copy
-        too, which emails use), and such websites the homepage."""
-        from harvey.collectors.discover import headline_name, site_root
+        """Discovery once took a page's wording for a company's name: a news
+        headline ("Acme lève 2 M€ pour..."), a press-release tag ("[Communiqué
+        de Presse] Acme") or a tagline ("Acme, the data API for..."), and an
+        article for its website. Such names get the company's name back (its
+        prospects' copy too, which emails use), and such websites the homepage."""
+        from harvey.collectors.discover import clean_company_name, site_root
         async with db.execute(
             "SELECT id, name, domain, website FROM companies WHERE name LIKE '% lève %' "
             "OR name LIKE '% raises %' OR name LIKE '% annonce %' OR name LIKE '% boucle %' "
-            "OR name LIKE '% secures %' OR name LIKE '% a levé %' OR website LIKE '%://%/_%'"
+            "OR name LIKE '% secures %' OR name LIKE '% a levé %' OR name LIKE '%[%' "
+            "OR name LIKE '%(%' OR name LIKE '%:%' OR name LIKE '%, %' OR website LIKE '%://%/_%'"
         ) as cursor:
             rows = await cursor.fetchall()
         changed = False
         for company_id, name, domain, website in rows:
-            new_name = headline_name(name or "", domain or "")
+            new_name = clean_company_name(name or "", domain or "")
             new_site = site_root(website or "", domain or "")
             if new_name != name:
                 await db.execute("UPDATE companies SET name = ? WHERE id = ?", (new_name, company_id))
