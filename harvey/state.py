@@ -102,6 +102,13 @@ def _company_answered(p: str) -> str:
     """SQL: someone at prospect ``p``'s company has replied."""
     return (f"EXISTS (SELECT 1 FROM prospects c, settings s "
             f"WHERE s.key = '{COMPANY_STOP_KEY}' || c.id AND {_colleagues(p, 'c')})")
+
+
+def _colleagues_in_outreach(p: str) -> str:
+    """SQL: how many people at prospect ``p``'s company Harvey has already
+    queued or written to (any status past 'new', bar a failed write)."""
+    return (f"(SELECT COUNT(*) FROM prospects c WHERE {_colleagues(p, 'c')} "
+            "AND c.status NOT IN ('new', 'write_failed'))")
 # Outbox error on what autopilot had approved when it was turned off.
 AUTOPILOT_OFF_REASON = "waiting for you: autopilot was turned off before it went out"
 # Outbox error on an approved cold email the compliance check couldn't answer
@@ -1625,11 +1632,11 @@ class StateManager:
         queued or written to (any status past 'new', bar a failed write)."""
         async with self._connect() as db:
             async with db.execute(
-                "SELECT COUNT(*) FROM prospects p, prospects c WHERE p.id = ? "
-                f"AND {_colleagues('p', 'c')} AND c.status NOT IN ('new', 'write_failed')",
+                f"SELECT {_colleagues_in_outreach('p')} FROM prospects p WHERE p.id = ?",
                 (prospect_id,),
             ) as cursor:
-                return (await cursor.fetchone())[0]
+                row = await cursor.fetchone()
+        return row[0] if row else 0
 
     async def colleague_who_replied(self, prospect_id: str) -> str | None:
         """The name of someone at this prospect's company who has replied,
@@ -2374,15 +2381,21 @@ class StateManager:
                         return True
         return False
 
-    async def count_writable_prospects(self) -> int:
-        """New prospects the Writer can draft for (a deliverable email)."""
+    async def count_writable_prospects(self, contacts_per_company: int = 0) -> int:
+        """New prospects the Writer can draft for (a deliverable email, and
+        with ``contacts_per_company``, a company with room for one more)."""
         marks = ",".join("?" for _ in WRITABLE_EMAIL_STATUSES)
+        params = list(WRITABLE_EMAIL_STATUSES)
+        room = ""
+        if contacts_per_company:
+            room = f"AND {_colleagues_in_outreach('p')} < ?"
+            params.append(contacts_per_company)
         async with self._connect() as db:
             async with db.execute(
                 f"""SELECT COUNT(*) FROM prospects p
                     WHERE status = 'new' AND email != ''
-                      AND email_status IN ({marks}) AND NOT {_company_answered('p')}""",
-                WRITABLE_EMAIL_STATUSES,
+                      AND email_status IN ({marks}) AND NOT {_company_answered('p')} {room}""",
+                params,
             ) as cursor:
                 return (await cursor.fetchone())[0]
 
@@ -2839,7 +2852,7 @@ class StateManager:
 
     # ── Summary for Decision Making ──
 
-    async def get_state_summary(self) -> dict:
+    async def get_state_summary(self, contacts_per_company: int = 0) -> dict:
         prospect_counts = await self.count_prospects_by_status()
         today = date.today().isoformat()
         async with self._connect() as db:
@@ -2867,8 +2880,9 @@ class StateManager:
             "prospects": prospect_counts,
             # The 'new' prospects the Writer can act on. A guessed or invalid
             # address stays 'new' forever, so deciding from the raw count
-            # would keep choosing write_campaign with nothing to write.
-            "writable_prospects": await self.count_writable_prospects(),
+            # would keep choosing write_campaign with nothing to write. The
+            # same goes for one held back by the per-company cap.
+            "writable_prospects": await self.count_writable_prospects(contacts_per_company),
             # Unusable ones found in the last day: the heartbeat pauses
             # prospecting for the day when these alone fill the backlog.
             "recent_unusable_prospects": await self.count_recent_unusable_prospects(),
