@@ -158,21 +158,19 @@ async def test_serper_searches_google_france_in_french():
 
 
 @pytest.mark.asyncio
-async def test_serper_free_accounts_get_the_first_ten_results():
+async def test_serper_asks_for_ten_results_in_one_request():
     sent = []
 
     def handler(request):
         body = json.loads(request.content)
-        sent.append(body["num"])
-        if body["num"] > 10:
-            return httpx.Response(400, json={"message": "Query pattern not allowed for free accounts.",
-                                             "statusCode": 400})
+        sent.append(body)
         return httpx.Response(200, json=SERPER_HIT)
 
     async with _client(handler) as client:
         out = await D.Serper().fetch(client, {"serper_api_key": "k"},
-                                     D.DiscoveryQuery(term="x after:2025-01-01", depth=30))
-    assert sent == [30, 10]
+                                     D.DiscoveryQuery(term="x after:2025-01-01", depth=30, language="fr"))
+    # Free accounts refuse more than 10; a French search still asks Google France.
+    assert [(b["num"], b.get("gl"), b.get("hl")) for b in sent] == [(10, "fr", "fr")]
     assert out[0].domain == "acme.fr"
 
 

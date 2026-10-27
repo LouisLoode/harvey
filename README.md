@@ -149,6 +149,52 @@ harvey dashboard          # prints a private link to http://127.0.0.1:5555
 harvey run
 ```
 
+### Or deploy with Docker (Linux)
+
+Docker Compose runs the dashboard; start and stop the heartbeat from its
+Actions card. Host networking preserves the dashboard's loopback-only bind at
+`127.0.0.1:5555`. This Compose setup supports native Linux; use the pip install
+above on macOS or Windows. On a remote Linux host, reach the dashboard through
+an SSH tunnel rather than exposing its port to the network.
+
+```bash
+git clone https://github.com/ethanplusai/harvey.git
+cd harvey
+
+# Create the credentials file only if you do not already have one.
+test -e .env || cp .env.example .env
+
+# Run as your Linux user, never root. Set these again when rebuilding.
+export HARVEY_UID=$(id -u) HARVEY_GID=$(id -g)
+
+# Sign in to Claude on the host first; ~/.claude must already exist.
+# The image ships Claude only; Codex is not included.
+docker compose build
+docker compose run --rm harvey setup
+
+docker compose up -d
+docker compose logs harvey
+# Open the private unlock link printed in the logs.
+```
+
+Compose mounts the checkout directory at `/app`. Setup credentials, both YAML
+config files, training output, knowledge files, and `data/` remain in that
+checkout when containers are recreated. Directory mounting also permits atomic
+configuration saves; do not replace it with individual config-file mounts.
+Harvey loads `.env` directly. Restart the container after editing credentials.
+The checkout and Claude auth directory must be writable by the selected user.
+
+To train later, use `docker compose run --rm harvey train <product-url>`;
+`harvey.local.yaml` is saved directly to the checkout. Back up this file, `.env`,
+`skills/`, and `data/` before moving installations. The running code also comes
+from the checkout: restart after updating it, and rebuild when dependencies or
+the Dockerfile change. The build context excludes local data and credentials.
+
+The dashboard listens on 5555. If you change the port in the Compose `command`,
+change the Dockerfile health-check port too and rebuild. Stop the service with
+`docker compose down`; its files remain in the checkout. Use a host install if
+you need the Codex provider.
+
 ---
 
 ## You confirm what it looks for
@@ -223,6 +269,8 @@ harvey discover               # go
 | **DataForSEO SERP** | $0.006 / search at depth 30 (Live, $0.002 per 10 results) | $1 credit + free sandbox | Organic rank as the buying signal, plus who holds the local 3-pack, searched from the city centre. |
 | **DataForSEO Google Maps** | $0.002 / search (up to 100 results) | $1 credit + free sandbox | Map rank, rating, category and claimed status, including businesses with no website. |
 | **Serper** | ~$0.30–1.00 / 1,000 | 2,500 free, no card | The easiest paid one to try. |
+| **Scavio Google Maps** | $0.01 / page (up to 20 listings) | 50 credits, no card | Google Maps listings around each city: phone, website, category, rating and reviews, including businesses with no website. |
+| **Scavio Google Search** | ~$0.03 / depth-30 search | same 50 credits | Rank as the signal, on the same key as Scavio Google Maps. |
 
 **Selling to startups?** Harvey has a built-in startup skill, made of three
 parts:
@@ -644,9 +692,9 @@ Harvey automates outreach, but **you are the sender.** Cold email is legal in mo
 
 **GDPR / PECR (EU & UK).** B2B cold email needs a defensible legitimate interest: the pitch must be genuinely relevant to that person's role, you must know where the data came from, and objecting must be effortless. If you can't say why a specific person would care, Harvey shouldn't email them — and its qualification rules say so.
 
-**Per-recipient check (optional).** Those rules turn on facts about each recipient: a UK sole trader needs consent where a limited company doesn't, Germany wants prior consent even for business email, and Canada's CASL depends on whether the address was published. With `compliance.precleared.enabled: true`, Harvey asks [Precleared](https://precleared.dev) about each new recipient before the first cold email. Anything other than `ok_to_email` holds that email back, with the rule and the next step shown in the Outbox, and the signed receipt id is logged with every send. One check per address, cached for 30 days (changing the sender country, address source, product description or prospect country triggers a fresh check); replies are never checked; native providers (Gmail, Microsoft 365, SMTP) only. Precleared works out each recipient's country from the address, company records or the company's website; if all your prospects are in one country, also set `prospect_country` (for example `US`), which it uses only when none of those show it. Precleared receives the recipient's address, your sender country, the address source, your product description and, if set, your prospects' country. Without a key it allows 10 checks a day, and a free key (`PRECLEARED_API_KEY`) allows 25. Put the setting in `harvey.yaml`, or in `harvey.local.yaml` if you trained Harvey, since that file wins.
+**Per-recipient check (optional).** Those rules turn on facts about each recipient: a UK sole trader needs consent where a limited company doesn't, Germany wants prior consent even for business email, and Canada's CASL depends on whether the address was published. With `compliance.precleared.enabled: true`, Harvey asks [Precleared](https://precleared.dev) about each new recipient before the first cold email. Anything other than `ok_to_email` holds that email back, with the rule and the next step shown in the Outbox, and the signed receipt id is logged with every send. One check per address, cached for 30 days (changing the sender country, address source, product description or the country sent with it triggers a fresh check); replies are never checked; native providers (Gmail, Microsoft 365, SMTP) only. Harvey tells Precleared the recipient's country when it is sure of it from the company's location (a country, a US state, a Canadian province or an Australian state named there, as for the send window), and Precleared takes that as settled; otherwise Precleared works the country out from the address, company records or the company's website. If all your prospects are in one country, also set `prospect_country` (for example `US`), which Precleared uses only when none of those show it; without it, the one country every `icp.geography` entry is in serves as that default. Precleared receives the recipient's address, your sender country, the address source, your product description and the recipient's country when Harvey is sure of it, else your prospects' country if there is one. It also receives the company's name and the person's name when Harvey has them, which it uses to find a UK company on the Companies House register when the domain alone doesn't (it doesn't store the person's name). Without a key it allows 10 checks a day, and a free key (`PRECLEARED_API_KEY`) allows 25. Put the setting in `harvey.yaml`, or in `harvey.local.yaml` if you trained Harvey, since that file wins. [docs/precleared.md](docs/precleared.md) has the details, verdict by verdict.
 
-**If the check is held up.** When Precleared can't answer (the day's free checks are used up, the key is out of checks or was rejected, or Precleared can't be reached), cold email waits and replies still go out. The Today page and `harvey status` say how many cold emails are waiting and what fixes it.
+**If the check is held up.** When Precleared can't answer (the day's free checks are used up, the key is out of checks, was rejected or is being rate limited, or Precleared can't be reached), cold email to new addresses waits and replies still go out; email to people Precleared has already cleared keeps going. If Precleared can't check one address, that email is tried again six hours later and the rest carry on, unless that happens at two different domains with no answer in between, which holds new addresses as above. The Today page and `harvey status` say how many cold emails are waiting on the check and what fixes it.
 
 **Bot disclosure.** Some jurisdictions require disclosing automation. Harvey is instructed to answer truthfully, always, if a prospect asks whether they're talking to an AI. Never configure it otherwise.
 
