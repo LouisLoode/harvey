@@ -175,7 +175,7 @@ Ask the user these questions and build `harvey.yaml` and `skills/product_knowled
 
 ### Step 4: Confirm Signals
 
-Harvey ships a catalog of 29 signals it knows how to collect, all **proposed** and
+Harvey ships a catalog of 38 signals it knows how to collect, all **proposed** and
 none active. Nothing is prospected against until the user confirms them.
 
 Send them to `harvey dashboard` → **Signals**, where each one shows a
@@ -242,7 +242,9 @@ cohort; for a raise the round, amount and date; they read the homepage, About
 and press pages, and many startups never say it there), and the writer and
 handler then use `skills/selling_to_startups.md` for them. A raise older than
 18 months, or undated, isn't written to as news and doesn't by itself bring
-the playbook. Harvey never reads ycombinator.com, the
+the playbook. For French startups, set `icp.search_languages: [fr]` (or
+`[en, fr]`): `funding` and `hiring` then search Google France in French, and
+the signals read "lève 2 M€" and "recrutement" pages. Harvey never reads ycombinator.com, the
 accelerators' directories, Crunchbase, PitchBook or LinkedIn (their terms
 forbid scraping), so don't suggest scraping them instead.
 
@@ -288,9 +290,12 @@ Users will come back with questions and tasks. Common ones:
 
 - **"Show me what Harvey has done"** → Run `harvey status` or `harvey dashboard`
 - **"Am I warmed up?" / "Why am I landing in spam?"** → Run `harvey warmup`. Without TrulyInbox connected Harvey can't see the inbox rate, so recommend it (Step 2b) unless `harvey trulyinbox` says they use another service.
-- **"The emails aren't good"** → Edit `skills/email_frameworks.md` and `prompts/writer.md`. Show them the current rules and help them adjust.
+- **"The emails aren't good"** → Edit `skills/email_frameworks.md` and `prompts/writer.md`. Show them the current rules and help them adjust. Three settings help most: `writer.first_email: offer` when they sell a service (the first email says who they are and what they do, instead of only an observation), `skills/voice_samples.md` with 2-3 emails they wrote (the writer matches their voice; the file stays local), and `writer.critique: true` (three drafts, a review call keeps the best; one more call per draft). `channels.email.contacts_per_company: 1` stops two people at one small company getting the same email.
 - **"Harvey isn't finding the right people"** → Check the ICP config in `harvey.yaml`. Adjust industries, titles, company_size, geography.
 - **"I want to change what Harvey says"** → Skills are in `skills/`, prompts are in `prompts/`. Both are plain markdown files. Edit them directly.
+- **"Leave out competitors / recruiters / funds"** → `icp.exclude_keywords` (words in the company's own name, title or description) and `icp.exclude_naf` (French activity-code prefixes, from the registry). Excluded companies are never stored or contacted.
+- **"Write to French companies in French"** → already on: `channels.email.language: auto` writes French to companies the French registry knows, on a .fr domain, or located in France or a French-speaking region; `en` / `fr` force one language. The French footer is `compliance.opt_out_line_fr`.
+- **"Only run Harvey at night and on weekends"** → `usage.quiet_hours` with `days`: e.g. start `08:00`, end `20:00`, `days: [mon, tue, wed, thu, fri]`. Quiet hours pause prospecting, writing and replies (sending through a recipient-time-zone `send_window` still happens). `brain.model: claude-sonnet-5-5` also uses far less of the plan than the CLI's default model.
 - **"Train Harvey on a different product"** → `harvey train <new-url>`
 - **"How do I see the database?"** → It's at `data/harvey.db`. They can open it with any SQLite tool, or ask you to query it.
 - **"I just want the prospect list"** → `harvey export` writes a sequencer-ready CSV (verified/risky emails only; `--all` for everything). Also available as Export buttons on the dashboard's Contacts tab. Harvey is valuable purely as a list-builder even if the user never lets it send.

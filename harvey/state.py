@@ -10,6 +10,7 @@ upgrade cleanly in place.
 """
 
 import json
+import unicodedata
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, date, timedelta, timezone
@@ -515,7 +516,52 @@ MIGRATIONS: list[str] = [
     -- knows about the recipient. Empty until then.
     ALTER TABLE prospects ADD COLUMN timezone TEXT DEFAULT '';
     """,
+    # ── v15: the Contacts tab sorts and pages in SQL ──
+    """
+    CREATE INDEX IF NOT EXISTS idx_prospects_created ON prospects(created_at);
+    CREATE INDEX IF NOT EXISTS idx_prospects_score ON prospects(score, created_at);
+    """,
 ]
+
+# The Contacts tab: filter groups, email statuses and sort columns, all
+# resolved here so the browser only ever gets one page of contacts.
+CONTACT_STATUS_GROUPS = {
+    "todo": ("new", "queued"),
+    "contacted": ("contacted",),
+    "replied": ("replied", "interested", "meeting"),
+}
+CONTACT_KNOWN_STATUSES = tuple(s for group in CONTACT_STATUS_GROUPS.values() for s in group)
+CONTACT_EMAIL_STATUSES = ("verified", "risky", "guess", "invalid")
+# Rows predating email_status carry only the legacy boolean; no email is "".
+_EMAIL_STATUS_SQL = ("(CASE WHEN email = '' THEN '' ELSE COALESCE(NULLIF(email_status, ''), "
+                     "CASE WHEN email_verified THEN 'verified' ELSE 'guess' END) END)")
+_STATUS_GROUP_SQL = ("(CASE WHEN status IN ('new','queued') THEN 'todo' "
+                     "WHEN status = 'contacted' THEN 'contacted' "
+                     "WHEN status IN ('replied','interested','meeting') THEN 'replied' ELSE 'closed' END)")
+# column -> (SQL, is text). Text sorts accent- and case-blind through fold().
+CONTACT_SORTS = {
+    "name": ("fold(TRIM(first_name || ' ' || last_name))", True),
+    "company": ("fold(company)", True),
+    "email": ("fold(email)", True),
+    "score": ("score", False),
+    "status": ("(CASE status WHEN 'new' THEN 1 WHEN 'queued' THEN 2 WHEN 'contacted' THEN 3 "
+               "WHEN 'replied' THEN 4 WHEN 'interested' THEN 5 WHEN 'meeting' THEN 6 ELSE 7 END)", False),
+    "added": ("created_at", False),
+}
+
+
+def _fold(value) -> str:
+    """"Élodie" → "elodie": for sorting and searching names the way people read them."""
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    return text.encode("ascii", "ignore").decode().lower()
+
+# Signals that move a company up the contacts backfill: it is hiring for a
+# role you care about, struggling to fill it, has no technical lead, uses your
+# stack, works remotely, just raised, or its directors are on record.
+BACKFILL_PRIORITY_SIGNALS = (
+    "HIRING_ROLE", "ROLE_OPEN_DAYS", "NO_TECH_LEADER", "STACK_MATCH", "REMOTE_ROLE",
+    "FUNDING_ROUND", "YC_BACKED", "ACCELERATOR", "REGISTRY_VERIFIED",
+)
 
 BRAIN_PROVIDERS = ("claude", "codex")
 _USAGE_LOG_COLUMN = {"claude": "claude_calls", "codex": "codex_calls"}
@@ -578,6 +624,35 @@ class StateManager:
                     await db.executescript(script)
                     await db.execute(f"PRAGMA user_version = {target}")
                     await db.commit()
+            await self._clean_headline_companies(db)
+
+    @staticmethod
+    async def _clean_headline_companies(db) -> None:
+        """Discovery once took a news headline for a company's name ("Acme
+        lève 2 M€ pour...", "Acme raises $12M") and the article for its
+        website. Such names get the company's name back (its prospects' copy
+        too, which emails use), and such websites the homepage."""
+        from harvey.collectors.discover import headline_name, site_root
+        async with db.execute(
+            "SELECT id, name, domain, website FROM companies WHERE name LIKE '% lève %' "
+            "OR name LIKE '% raises %' OR name LIKE '% annonce %' OR name LIKE '% boucle %' "
+            "OR name LIKE '% secures %' OR name LIKE '% a levé %' OR website LIKE '%://%/_%'"
+        ) as cursor:
+            rows = await cursor.fetchall()
+        changed = False
+        for company_id, name, domain, website in rows:
+            new_name = headline_name(name or "", domain or "")
+            new_site = site_root(website or "", domain or "")
+            if new_name != name:
+                await db.execute("UPDATE companies SET name = ? WHERE id = ?", (new_name, company_id))
+                await db.execute("UPDATE prospects SET company = ? WHERE company_id = ? AND company = ?",
+                                 (new_name, company_id, name))
+                changed = True
+            if new_site != website:
+                await db.execute("UPDATE companies SET website = ? WHERE id = ?", (new_site, company_id))
+                changed = True
+        if changed:
+            await db.commit()
 
     # ── Companies ──
 
@@ -1355,6 +1430,101 @@ class StateManager:
             await db.commit()
             return cursor.rowcount
 
+    async def contacts_page(self, sort: str = "added", direction: str = "desc",
+                            status: str = "all", email: str = "all", query: str = "",
+                            offset: int = 0, limit: int = 50) -> dict:
+        """One page of the Contacts tab, sorted, filtered and searched in SQL.
+
+        ``status`` is a CONTACT_STATUS_GROUPS key, "closed" (anything past
+        them) or "all"; ``email`` one of CONTACT_EMAIL_STATUSES or "all";
+        ``query`` matches name, company, email and title, ignoring case and
+        accents. Returns the page's rows, how many match, how many contacts
+        there are at all, and the counts each filter button shows (each set
+        honouring the search and the other filter).
+        """
+        sort = sort if sort in CONTACT_SORTS else "added"
+        direction = "ASC" if direction == "asc" else "DESC"
+        limit = max(1, min(int(limit), 200))
+        offset = max(0, int(offset))
+
+        def status_cond():
+            if status in CONTACT_STATUS_GROUPS:
+                values = CONTACT_STATUS_GROUPS[status]
+                return f"status IN ({','.join('?' * len(values))})", list(values)
+            if status == "closed":
+                values = CONTACT_KNOWN_STATUSES
+                return f"status NOT IN ({','.join('?' * len(values))})", list(values)
+            return "1", []
+
+        def email_cond():
+            if email in CONTACT_EMAIL_STATUSES:
+                return f"{_EMAIL_STATUS_SQL} = ?", [email]
+            return "1", []
+
+        def query_cond():
+            q = _fold(query).strip()
+            if not q:
+                return "1", []
+            pattern = "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+            return ("fold(first_name || ' ' || last_name || ' ' || company || ' ' || email || ' ' || title) "
+                    "LIKE ? ESCAPE '\\'"), [pattern]
+
+        (s_sql, s_args), (e_sql, e_args), (q_sql, q_args) = status_cond(), email_cond(), query_cond()
+        expr, is_text = CONTACT_SORTS[sort]
+        # Missing values last whichever the direction, then newest first on ties.
+        missing = f"({expr} IS NULL OR {expr} = '')" if is_text else f"({expr} IS NULL)"
+        order = f"{missing} ASC, {expr} {direction}"
+        if sort == "status":
+            order += ", status ASC"
+        order += ", created_at DESC, id"
+
+        async with self._connect() as db:
+            await db.create_function("fold", 1, _fold, deterministic=True)
+            db.row_factory = aiosqlite.Row
+
+            async def one(sql, args):
+                async with db.execute(sql, args) as cursor:
+                    return (await cursor.fetchone())[0]
+
+            async def groups(sql, args):
+                async with db.execute(sql, args) as cursor:
+                    return {row[0]: row[1] for row in await cursor.fetchall()}
+
+            where = f"{s_sql} AND {e_sql} AND {q_sql}"
+            args = s_args + e_args + q_args
+            total = await one(f"SELECT COUNT(*) FROM prospects WHERE {where}", args)
+            async with db.execute(
+                f"SELECT * FROM prospects WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
+                args + [limit, offset],
+            ) as cursor:
+                rows = [dict(r) for r in await cursor.fetchall()]
+            by_status = await groups(
+                f"SELECT {_STATUS_GROUP_SQL}, COUNT(*) FROM prospects WHERE {e_sql} AND {q_sql} GROUP BY 1",
+                e_args + q_args)
+            by_email = await groups(
+                f"SELECT {_EMAIL_STATUS_SQL}, COUNT(*) FROM prospects WHERE {s_sql} AND {q_sql} GROUP BY 1",
+                s_args + q_args)
+            everyone = await one("SELECT COUNT(*) FROM prospects", [])
+
+        status_counts = {key: by_status.get(key, 0) for key in (*CONTACT_STATUS_GROUPS, "closed")}
+        status_counts["all"] = sum(by_status.values())
+        email_counts = {key: by_email.get(key, 0) for key in CONTACT_EMAIL_STATUSES}
+        email_counts["all"] = sum(by_email.values())
+        return {"items": rows, "total": total, "everyone": everyone, "offset": offset,
+                "limit": limit, "sort": sort, "dir": direction.lower(),
+                "counts": {"status": status_counts, "email": email_counts}}
+
+    async def colleagues_in_outreach(self, prospect_id: str) -> int:
+        """How many people at this prospect's company Harvey has already
+        queued or written to (any status past 'new', bar a failed write)."""
+        async with self._connect() as db:
+            async with db.execute(
+                "SELECT COUNT(*) FROM prospects p, prospects c WHERE p.id = ? "
+                f"AND {_colleagues('p', 'c')} AND c.status NOT IN ('new', 'write_failed')",
+                (prospect_id,),
+            ) as cursor:
+                return (await cursor.fetchone())[0]
+
     async def colleague_who_replied(self, prospect_id: str) -> str | None:
         """The name of someone at this prospect's company who has replied,
         or None. A cold email to them is no longer cold: the company answered."""
@@ -1890,26 +2060,47 @@ class StateManager:
         prospecting pass go back and fill that in, instead of only ever
         looking at companies it stumbles into fresh in the same cycle.
 
-        Ordered by ``prospects_checked_at`` (nulls first) rather than
-        recency, so a backfill pass rotates through the whole backlog
-        instead of retrying the same top-N-by-created_at companies every
-        cycle — a company a team page didn't exist for last time is worth
-        another look after ``stale_days``, not a permanent skip.
+        Companies showing buying intent come first (how many of
+        BACKFILL_PRIORITY_SIGNALS they currently show), then by
+        ``prospects_checked_at`` (nulls first) rather than recency, so a
+        backfill pass rotates through the whole backlog instead of retrying
+        the same top-N-by-created_at companies every cycle — a company a team
+        page didn't exist for last time is worth another look after
+        ``stale_days``, not a permanent skip. A company the ICP rules out
+        (ICP_EXCLUDED) is never returned.
         """
+        codes = ("ICP_EXCLUDED",) + BACKFILL_PRIORITY_SIGNALS
+        marks = ",".join("?" for _ in codes)
+        intent = ",".join("?" for _ in BACKFILL_PRIORITY_SIGNALS)
         async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
-                """SELECT c.id, c.name, c.domain, c.industry
+                f"""WITH latest AS (
+                       SELECT o.company_id, o.signal_code, o.value_num
+                       FROM observations o
+                       JOIN (SELECT company_id, signal_code, MAX(observed_at) AS at
+                             FROM observations WHERE signal_code IN ({marks})
+                             GROUP BY company_id, signal_code) l
+                         ON l.company_id = o.company_id AND l.signal_code = o.signal_code
+                        AND l.at = o.observed_at
+                   )
+                   SELECT c.id, c.name, c.domain, c.industry
                    FROM companies c
                    LEFT JOIN prospects p ON p.company_id = c.id
                    WHERE c.domain != ''
                      AND (c.prospects_checked_at IS NULL
                           OR c.prospects_checked_at < datetime('now', ?))
+                     AND NOT EXISTS (SELECT 1 FROM latest x
+                                     WHERE x.company_id = c.id AND x.signal_code = 'ICP_EXCLUDED'
+                                       AND COALESCE(x.value_num, 1) != 0)
                    GROUP BY c.id
                    HAVING COUNT(p.id) = 0
-                   ORDER BY c.prospects_checked_at IS NOT NULL, c.prospects_checked_at
+                   ORDER BY (SELECT COUNT(DISTINCT y.signal_code) FROM latest y
+                             WHERE y.company_id = c.id AND y.signal_code IN ({intent})
+                               AND (y.value_num IS NULL OR y.value_num != 0)) DESC,
+                            c.prospects_checked_at IS NOT NULL, c.prospects_checked_at
                    LIMIT ?""",
-                (f"-{int(stale_days)} days", int(limit)),
+                (*codes, f"-{int(stale_days)} days", *BACKFILL_PRIORITY_SIGNALS, int(limit)),
             ) as cursor:
                 return [dict(r) for r in await cursor.fetchall()]
 

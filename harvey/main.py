@@ -12,7 +12,7 @@ from harvey.brain import Brain
 from harvey.sending_mode import sync_sending_mode
 from harvey.config import (
     ConfigError, load_config, load_env, HarveyConfig, legacy_sending_held, sending_notice,
-    compliance_notice, send_window_of,
+    compliance_notice, send_window_of, WEEKDAYS,
 )
 from harvey.integrations.mail_provider import NATIVE_PROVIDERS
 from harvey.pidfile import (
@@ -50,19 +50,25 @@ QUIET_HOURS_POLL_SECONDS = 300
 REPLY_READERS = ("handle_replies", "read_replies")
 
 
-def in_quiet_hours(config: HarveyConfig) -> bool:
-    """Check if we're currently in quiet hours."""
+def in_quiet_hours(config: HarveyConfig, now: datetime | None = None) -> bool:
+    """Check if we're currently in quiet hours (on one of their days)."""
     qh = config.usage.quiet_hours
     tz = pytz.timezone(qh.timezone)
-    now = datetime.now(tz).time()
+    now = now.astimezone(tz) if now is not None else datetime.now(tz)
     start = time.fromisoformat(qh.start)
     end = time.fromisoformat(qh.end)
+    days = getattr(qh, "days", None) or WEEKDAYS
+
+    def quiet_day(day) -> bool:
+        return WEEKDAYS[day.weekday()] in days
 
     if start <= end:
-        return start <= now <= end
-    else:
-        # Quiet hours cross midnight (e.g., 22:00 - 07:00)
-        return now >= start or now <= end
+        return start <= now.time() <= end and quiet_day(now)
+    # Quiet hours cross midnight (e.g., 22:00 - 07:00): the early hours
+    # belong to the day the period started.
+    if now.time() >= start:
+        return quiet_day(now)
+    return now.time() <= end and quiet_day(now - timedelta(days=1))
 
 
 def sends_through_quiet_hours(config: HarveyConfig) -> bool:
@@ -134,6 +140,16 @@ def unusable_backlog_notice(summary: dict) -> str:
     )
 
 
+async def _sending_paused(state) -> bool:
+    """Is the sending kill switch on? A failed read counts as not paused:
+    the sender checks it again before anything goes out."""
+    from harvey.agents.sender import KILL_SWITCH_KEY
+    try:
+        return bool(await state.get_setting(KILL_SWITCH_KEY))
+    except Exception:
+        return False
+
+
 async def decide_next_action(
     brain: Brain,
     state: StateManager,
@@ -156,9 +172,12 @@ async def decide_next_action(
     draft_campaigns = summary.get("draft_campaigns", 0) or 0
     open_conversations = summary.get("open_conversations", 0) or 0
 
-    # Held Instantly drafts can't deploy; choosing send_campaign for them
-    # every cycle would starve the writer and scout forever.
-    deployable = 0 if legacy_sending_held(config) else draft_campaigns
+    # Held Instantly drafts can't deploy, and while sending is paused (the
+    # kill switch) the sender stages nothing either; choosing send_campaign
+    # for them every cycle would starve the writer and scout forever. The
+    # drafts are staged once sending resumes.
+    held = legacy_sending_held(config) or await _sending_paused(state)
+    deployable = 0 if held else draft_campaigns
 
     if open_conversations > 0:
         action, reason = "handle_replies", f"{open_conversations} open conversation(s) waiting"

@@ -110,6 +110,7 @@ a short plain-text business email, so return email text only.
 
 Hard limits on the rewrite, on top of the instructions above:
 - Keep every merge variable such as {{{{first_name}}}} or {{{{company}}}} exactly as written.
+- Keep the draft's language: a French draft stays in French, an English one in English.
 - Add no fact, name, number or claim that is not already in the draft.
 - No em dashes, no bullets, no bold, no exclamation marks.
 - Do not make the email longer. Keep exactly one question.

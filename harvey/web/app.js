@@ -1860,8 +1860,10 @@ function renderDesk(items, i) {
       '<div class="body">' + escHtml(cur.body) + '</div>';
   // Cold email leaves with the footer underneath; show it as it will go out.
   // Not added again when the body already ends with it, as in the Sender.
-  const added = cur.kind === 'sequence' && !(cur.body || '').trimEnd().endsWith(_desk.footer)
-    ? _desk.footer : '';
+  // Each draft's own footer: its opt-out line is in the draft's language.
+  const itemFooter = cur.footer !== undefined ? cur.footer : _desk.footer;
+  const added = cur.kind === 'sequence' && !(cur.body || '').trimEnd().endsWith(itemFooter)
+    ? itemFooter : '';
   const footer = added
     ? '<div class="desk-footer" title="Added when it sends (compliance in harvey.yaml)">' +
         escHtml(added) + '</div>' : '';
@@ -2080,33 +2082,65 @@ function fbCampaign(i) {
   if (c) submitFeedback('campaign', c.id, 'What should Harvey do differently in the emails it writes next? (e.g. "shorter; don\'t mention reviews")');
 }
 
-// Search and status filter live outside the table, so the 15-second refresh
-// re-renders rows without losing what you typed.
-let _contactQuery = '', _contactFilter = 'all';
+// Search, filters, sort and page live outside the table, so the 15-second
+// refresh re-fetches the same page without losing what you typed or clicked.
+// The server sorts, filters, searches and pages (/api/contacts): the page
+// only ever holds one page of contacts, however long the list gets.
+let _contactQuery = '', _contactFilter = 'all', _contactEmail = 'all';
+let _contactSort = {key: 'added', dir: 'desc'};
+let _contactOffset = 0, _contactPage = null, _contactSeq = 0, _contactTimer = null, _contactSig = '';
+const CONTACT_PAGE_SIZE = 50;
 const CONTACT_FILTERS = [
-  ['all', 'All', null],
-  ['todo', 'To write', ['new', 'queued']],
-  ['contacted', 'Contacted', ['contacted']],
-  ['replied', 'Replied', ['replied', 'interested', 'meeting']],
-  ['closed', 'Closed out', null],
+  ['all', 'All'],
+  ['todo', 'To write'],
+  ['contacted', 'Contacted'],
+  ['replied', 'Replied'],
+  ['closed', 'Closed out'],
 ];
+const EMAIL_FILTERS = [
+  ['all', 'Any email'],
+  ['verified', 'Verified'],
+  ['risky', 'Catch-all'],
+  ['guess', 'Unverified'],
+  ['invalid', 'Invalid'],
+];
+const CONTACT_SORT_FIRST = {score: 'desc', added: 'desc'};   // the rest start A→Z
 
 async function loadProspects() {
   const el = document.getElementById('prospects-table');
-  const data = await api('/api/prospects');
-  if (!data) { el.innerHTML = offlineState(); return; }
-  _prospects = data;
-  if (!data.length) {
+  const seq = ++_contactSeq;
+  const params = new URLSearchParams({
+    sort: _contactSort.key, dir: _contactSort.dir, status: _contactFilter, email: _contactEmail,
+    q: _contactQuery.trim(), offset: _contactOffset, limit: CONTACT_PAGE_SIZE,
+  });
+  const data = await api('/api/contacts?' + params);
+  if (seq !== _contactSeq) return;   // a newer request (a click, a keystroke) won
+  if (!data || data.error) { el.innerHTML = offlineState(); return; }
+  if (!data.everyone) {
+    _prospects = [];
     el.innerHTML = emptyState(icon('contacts'), 'No contacts yet',
       'Harvey hasn\'t found any prospects. Once it\'s running, the Scout agent searches the web for people matching your ideal customer profile in <b>harvey.yaml</b>.');
     return;
   }
+  // A page past the end (contacts left the filter meanwhile): go to the last one.
+  if (!data.items.length && data.total && _contactOffset) {
+    _contactOffset = Math.max(0, Math.floor((data.total - 1) / CONTACT_PAGE_SIZE) * CONTACT_PAGE_SIZE);
+    return loadProspects();
+  }
+  // The 15-second refresh re-renders only when something changed, so a row
+  // being hovered or a button about to be clicked isn't swapped out under you.
+  const sig = JSON.stringify(data);
+  if (sig === _contactSig && document.getElementById('contact-rows')) return;
+  _contactSig = sig;
+  _prospects = data.items;
+  _contactPage = data;
   if (!document.getElementById('contact-rows')) {
     el.innerHTML = '<div class="toolbar">' +
       '<label class="search">' + icon('discover') +
         '<input class="form-input" id="contact-search" type="search" placeholder="Search name, company, email" ' +
-        'aria-label="Search contacts" oninput="_contactQuery=this.value;renderContacts()"></label>' +
+        'aria-label="Search contacts" oninput="searchContacts(this.value)"></label>' +
       '<div class="segmented" id="contact-filters" role="group" aria-label="Filter by status"></div>' +
+      '<div class="segmented" id="contact-email-filters" role="group" aria-label="Filter by email"></div>' +
       '</div><div id="contact-rows"></div>';
     // A rebuild after an offline blip must show the search still applied.
     document.getElementById('contact-search').value = _contactQuery;
@@ -2114,35 +2148,70 @@ async function loadProspects() {
   renderContacts();
 }
 
-function contactMatches(p, f) {
-  const known = ['new', 'queued', 'contacted', 'replied', 'interested', 'meeting'];
-  if (f === 'all') return true;
-  if (f === 'closed') return !known.includes(p.status);
-  const hit = CONTACT_FILTERS.find(x => x[0] === f);
-  return !!(hit && hit[2] && hit[2].includes(p.status));
+// Typing searches once you pause, not on every keystroke.
+function searchContacts(value) {
+  _contactQuery = value;
+  clearTimeout(_contactTimer);
+  _contactTimer = setTimeout(() => { _contactOffset = 0; loadProspects(); }, 250);
 }
 
-function setContactFilter(f) { _contactFilter = f; renderContacts(); }
+function setContactFilter(f) { _contactFilter = f; _contactOffset = 0; loadProspects(); }
+
+function setContactEmail(f) { _contactEmail = f; _contactOffset = 0; loadProspects(); }
+
+function sortContactsBy(key) {
+  _contactSort = _contactSort.key === key
+    ? {key, dir: _contactSort.dir === 'asc' ? 'desc' : 'asc'}
+    : {key, dir: CONTACT_SORT_FIRST[key] || 'asc'};
+  _contactOffset = 0;
+  loadProspects();
+}
+
+function contactPage(step) {
+  const total = (_contactPage && _contactPage.total) || 0;
+  _contactOffset = Math.min(Math.max(0, _contactOffset + step * CONTACT_PAGE_SIZE),
+    Math.max(0, total - 1));
+  loadProspects();
+}
+
+function sortHeader(key, label) {
+  const on = _contactSort.key === key;
+  const dir = on ? _contactSort.dir : '';
+  return '<th aria-sort="' + (on ? (dir === 'asc' ? 'ascending' : 'descending') : 'none') + '">' +
+    '<button class="th-sort' + (on ? ' on' : '') + '" onclick="sortContactsBy(\'' + key + '\')" ' +
+    'title="Sort by ' + label.toLowerCase() + '">' + label +
+    '<span class="sort-ind" aria-hidden="true">' + (on ? (dir === 'asc' ? '▲' : '▼') : '↕') + '</span>' +
+    '</button></th>';
+}
+
+function filterButtons(list, current, counts, setter) {
+  return list.map(f =>
+    '<button class="' + (f[0] === current ? 'on' : '') + '" aria-pressed="' + (f[0] === current) + '" ' +
+      'onclick="' + setter + '(\'' + f[0] + '\')">' + f[1] +
+      ' <span class="n">' + ((counts && counts[f[0]]) || 0) + '</span></button>'
+  ).join('');
+}
 
 function renderContacts() {
   const rowsEl = document.getElementById('contact-rows');
-  const filtersEl = document.getElementById('contact-filters');
-  if (!rowsEl) return;
-  const q = _contactQuery.trim().toLowerCase();
-  const found = p => !q || [p.first_name, p.last_name, p.company, p.email, p.title].join(' ').toLowerCase().includes(q);
-  filtersEl.innerHTML = CONTACT_FILTERS.map(f =>
-    '<button class="' + (f[0] === _contactFilter ? 'on' : '') + '" aria-pressed="' + (f[0] === _contactFilter) + '" onclick="setContactFilter(\'' + f[0] + '\')">' +
-      f[1] + ' <span class="n">' + _prospects.filter(p => contactMatches(p, f[0]) && found(p)).length + '</span></button>'
-  ).join('');
+  const page = _contactPage;
+  if (!rowsEl || !page) return;
+  // Each set of counts honours the search and the other filter (server-side).
+  document.getElementById('contact-filters').innerHTML =
+    filterButtons(CONTACT_FILTERS, _contactFilter, page.counts.status, 'setContactFilter');
+  document.getElementById('contact-email-filters').innerHTML =
+    filterButtons(EMAIL_FILTERS, _contactEmail, page.counts.email, 'setContactEmail');
 
-  const rows = _prospects.map((p, i) => [p, i]).filter(([p]) => contactMatches(p, _contactFilter) && found(p));
+  const rows = _prospects.map((p, i) => [p, i]);
   if (!rows.length) {
     rowsEl.innerHTML = '<div class="table-card">' + emptyState(icon('discover'), 'No matches',
       'Nothing matches that search and filter.') + '</div>';
     return;
   }
-  let html = '<div class="table-card"><table class="nowrap"><thead><tr><th>Name</th><th>Company</th><th>Email</th>' +
-    '<th>Score</th><th>Status</th><th>Source</th><th>Added</th><th></th></tr></thead><tbody>';
+  let html = '<div class="table-card"><table class="nowrap"><thead><tr>' +
+    sortHeader('name', 'Name') + sortHeader('company', 'Company') + sortHeader('email', 'Email') +
+    sortHeader('score', 'Score') + sortHeader('status', 'Status') + '<th>Source</th>' +
+    sortHeader('added', 'Added') + '<th></th></tr></thead><tbody>';
   for (const [p, i] of rows) {
     html += '<tr><td><div class="cell-row"><span class="avatar">' + initials(p.first_name, p.last_name) + '</span>' +
         '<div class="cell-stack"><span class="cell-main">' + escHtml(p.first_name) + ' ' + escHtml(p.last_name) + '</span>' +
@@ -2165,8 +2234,16 @@ function renderContacts() {
         'title="Leave feedback on this contact">Feedback</button></div></td></tr>';
     if (_optOut.id === p.id) html += '<tr class="detail-row"><td colspan="8">' + optOutPanel(p) + '</td></tr>';
   }
+  const first = page.offset + 1, last = page.offset + rows.length;
+  const pager = page.total > CONTACT_PAGE_SIZE
+    ? ' <span class="pager">' +
+        '<button class="btn btn-ghost btn-sm" onclick="contactPage(-1)"' + (page.offset ? '' : ' disabled') + '>Previous</button>' +
+        '<button class="btn btn-ghost btn-sm" onclick="contactPage(1)"' + (last < page.total ? '' : ' disabled') + '>Next</button>' +
+      '</span>'
+    : '';
   rowsEl.innerHTML = html + '</tbody></table></div>' +
-    '<div class="table-foot">' + rows.length + ' of ' + _prospects.length + ' contacts</div>';
+    '<div class="table-foot">' + first + '–' + last + ' of ' + page.total +
+      (page.total !== page.everyone ? ' (' + page.everyone + ' contacts in all)' : ' contacts') + pager + '</div>';
 }
 
 // Why someone is opted out, and undoing it. Harvey never moves anyone off
@@ -2252,7 +2329,11 @@ async function undoOptOut() {
 // From a conversation: the contact, with the opt-out record open.
 async function showOptOut(prospectId, email) {
   goTab('prospects');
+  // The search finds them; no filter or page may hide them.
   _contactQuery = email || '';
+  _contactFilter = 'all';
+  _contactEmail = 'all';
+  _contactOffset = 0;
   const search = document.getElementById('contact-search');
   if (search) search.value = _contactQuery;
   await loadProspects();

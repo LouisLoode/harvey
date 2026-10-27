@@ -94,6 +94,15 @@ JUNK_DOMAIN_PATTERNS = tuple(re.compile(p, re.I) for p in (
     r"(^|\.)(startupintros|openvc|siliconcanals|startupdaily|e27|similarweb|vcbacked|roundos)\.",
     r"(^|\.)(techfundingnews|startups\.gallery)",
     r"(^|\.)tech\.eu$",
+    # the French equivalents: tech press, round trackers, company registries,
+    # job boards and freelance marketplaces (the French presets' noise)
+    r"(^|\.)(maddyness|frenchweb|lesechos|usine-digitale|usinenouvelle|journaldunet|latribune|cfnews|fusacq)\.",
+    r"(^|\.)(lefigaro|lemonde|bfmtv|challenges|capital|widoobiz|frenchtechjournal|decideurs-magazine)\.",
+    r"(^|\.)(lejournaldesentreprises|jaimelesstartups|alliancy|ticpharma|lemondeduchiffre|siecledigital)\.",
+    r"(^|\.)(presse-citron|eldorado|magstartup|independant|europeanstartupinsider|francedigitale)\.",
+    r"(^|\.)(bpifrance|lafrenchtech|societe|pappers|infogreffe|verif|annuaire-entreprises)\.",
+    r"(^|\.)(welcometothejungle|hellowork|apec|francetravail|pole-emploi|jobteaser|meteojob|cadremploi)\.",
+    r"(^|\.)(regionsjob|monster|choosemycompany|lesjeudis|talent|free-work|malt|codeur|comet|cremedelacreme)\.",
     # infrastructure that is never a prospect
     r"(^|\.)(google|bing|yahoo|duckduckgo|amazon|apple|microsoft)\.",
     r"(wordpress|wix|squarespace|shopify|godaddy|weebly|webflow)\.com$",
@@ -233,6 +242,26 @@ def site_name_from_html(html: str, domain: str) -> str:
                default="")
 
 
+# A news headline, not a name: "Webyn lève 2,7 millions d'euros pour...",
+# "Acme raises $12M Series A". The name is what comes before the verb.
+_HEADLINE = re.compile(
+    r"(?i)^(?P<name>.{2,40}?)\s+(?:lève|lèvent|a\s+levé|boucle|bouclent|annonce|finalise|réalise|"
+    r"raises?|raised|secures?|closes?|announces?|lands?|bags?|nets?|completes?)\b")
+
+
+def headline_name(name: str, domain: str = "") -> str:
+    """The company's name inside a headline used as its name; anything else
+    comes back as it was. Falls back to the domain's name when the words
+    before the verb aren't the company's."""
+    m = _HEADLINE.match((name or "").strip())
+    if not m:
+        return name
+    short = m.group("name").strip(" ,:;-–—|")
+    if domain and not name_matches_domain(short, domain):
+        return name_from_domain(domain)
+    return short
+
+
 def business_name(title: str, domain: str) -> str:
     """The business's name from a SERP title, or one derived from its domain."""
     stem = _domain_stem(domain)
@@ -244,8 +273,19 @@ def business_name(title: str, domain: str) -> str:
         # Prefer the segment with the most distinctive domain evidence rather
         # than the first incidental substring. Stable ties preserve title order.
         if matches:
-            return max(matches, key=lambda seg: _segment_domain_evidence(seg, stem))
+            return headline_name(max(matches, key=lambda seg: _segment_domain_evidence(seg, stem)), domain)
     return name_from_domain(domain) if stem else title
+
+
+def site_root(url: str, domain: str = "") -> str:
+    """A company's website as its homepage: a search that found it on a blog
+    post or a careers page gives that page, which stays the source_url."""
+    parsed = urlparse(url or "")
+    if not parsed.scheme or not parsed.netloc:
+        return url
+    if parsed.path.strip("/") or parsed.query:
+        return f"{parsed.scheme}://{parsed.netloc}"
+    return url
 
 
 def is_junk(domain: str, name: str = "") -> bool:
@@ -375,6 +415,7 @@ class DiscoveryQuery:
     depth: int = 30                  # SERP depth; ignored by listings providers
     limit: int = 100                 # max records to take from one query
     preset: str = ""                 # PRESETS key that built it, if any
+    language: str = ""               # "fr": a French search (Google France, in French)
 
     def keyword(self) -> str:
         return f"{self.term} {self.location}".strip()
@@ -403,8 +444,10 @@ US_STATES = {
 _US_STATE_NAMES = {v.lower(): v for v in US_STATES.values()}
 
 # DataForSEO requires a location on every SERP task. A search with no place
-# at all (the non-local YC preset) is a United States search.
+# at all (the non-local YC preset) is a United States search, or a French
+# one when the preset searches in French.
 DEFAULT_LOCATION_CODE = 2840
+LANGUAGE_LOCATION_CODES = {"fr": 2250}
 
 
 def dataforseo_location_name(place: str) -> str:
@@ -431,7 +474,7 @@ def _dfs_location(query: "DiscoveryQuery", point_suffix: str) -> dict:
             return {"location_coordinate": f"{lat.strip()},{lng.strip()},{point_suffix}"}
     if query.location:
         return {"location_name": dataforseo_location_name(query.location)}
-    return {"location_code": DEFAULT_LOCATION_CODE}
+    return {"location_code": LANGUAGE_LOCATION_CODES.get(query.language, DEFAULT_LOCATION_CODE)}
 
 
 # ── Provider adapters ─────────────────────────────────────────────────
@@ -630,7 +673,7 @@ class DataForSEOSerp(DiscoveryProvider):
     async def fetch(self, client, env, query):
         keyword = query.keyword()
         items = await self._post(client, env, "serp/google/organic/live/advanced", {
-            "keyword": keyword, "language_code": "en", "depth": query.depth,
+            "keyword": keyword, "language_code": query.language or "en", "depth": query.depth,
             "device": "desktop", **_dfs_location(query, self.POINT_RADIUS)})
 
         # One Business per identity: a company in the pack AND at organic 14
@@ -710,7 +753,7 @@ class DataForSEOMaps(DataForSEOSerp):
     async def fetch(self, client, env, query):
         keyword = query.keyword()
         items = await self._post(client, env, "serp/google/maps/live/advanced", {
-            "keyword": keyword, "language_code": "en", "depth": query.depth,
+            "keyword": keyword, "language_code": query.language or "en", "depth": query.depth,
             **_dfs_location(query, self.ZOOM)})
         out = []
         for item in items:
@@ -762,6 +805,9 @@ def _best(current: int | None, new) -> int | None:
     return new if current is None else min(current, new)
 
 
+SERPER_LOCALES = {"fr": {"gl": "fr", "hl": "fr"}}
+
+
 class Serper(DiscoveryProvider):
     """Google search with the friendliest free tier and the best depth pricing.
 
@@ -786,12 +832,26 @@ class Serper(DiscoveryProvider):
         return sum(0.001 * max(1, -(-q.depth // 10)) for q in queries)
 
     async def fetch(self, client, env, query):
-        r = await client.post(
-            "https://google.serper.dev/search",
-            headers={"X-API-KEY": env["serper_api_key"],
-                     "Content-Type": "application/json"},
-            json={"q": query.keyword(), "num": min(query.depth, 100)},
-        )
+        payload = {"q": query.keyword(), "num": min(query.depth, 100)}
+        if query.language:
+            # Google France, in French: "gl" is the country, "hl" the language.
+            payload.update(SERPER_LOCALES.get(query.language, {}))
+
+        async def search():
+            return await client.post(
+                "https://google.serper.dev/search",
+                headers={"X-API-KEY": env["serper_api_key"],
+                         "Content-Type": "application/json"},
+                json=payload,
+            )
+
+        r = await search()
+        # Free accounts refuse a search with operators (site:, after:, which
+        # every preset uses) past 10 results, so take the first 10.
+        if (r.status_code == 400 and payload["num"] > 10
+                and "not allowed for free accounts" in r.text.lower()):
+            payload["num"] = 10
+            r = await search()
         r.raise_for_status()
         data = r.json()
         out = []
@@ -1174,6 +1234,7 @@ class DiscoveryReport:
     actual_cost: float = 0.0
     found: int = 0
     junk: int = 0
+    excluded: int = 0
     new_companies: int = 0
     known_companies: int = 0
     observations: int = 0
@@ -1186,7 +1247,7 @@ class DiscoveryReport:
             "provider": self.provider, "queries": self.queries,
             "estimated_cost": round(self.estimated_cost, 4),
             "actual_cost": round(self.actual_cost, 4),
-            "found": self.found, "junk": self.junk,
+            "found": self.found, "junk": self.junk, "excluded": self.excluded,
             "new_companies": self.new_companies,
             "known_companies": self.known_companies,
             "observations": self.observations,
@@ -1223,6 +1284,11 @@ PRESETS = {
                  "-site:teamtailor.com -site:personio.de -site:breezy.hr -site:applytojob.com "
                  "-site:myworkdayjobs.com -site:ats.rippling.com -site:linkedin.com "
                  "-site:indeed.com -site:glassdoor.com -site:ziprecruiter.com"),
+        # The same in French (icp.search_languages). Google reads only the
+        # first 32 words, so the French versions stay short.
+        "fr": ('"{role}" (recrutement OR carrières OR "nous rejoindre" OR "rejoignez-nous") {industry} '
+               "-site:welcometothejungle.com -site:linkedin.com -site:indeed.fr -site:hellowork.com "
+               "-site:apec.fr -site:francetravail.fr -site:malt.fr -site:free-work.com"),
         "local": False,
     },
     # Startups that say on their own site an accelerator backed them. Two
@@ -1251,14 +1317,24 @@ PRESETS = {
                  '("seed round" OR "Series A" OR "Series B") after:{since} '
                  "-site:techcrunch.com -site:crunchbase.com -site:pitchbook.com -site:linkedin.com "
                  "-site:prnewswire.com -site:businesswire.com -site:globenewswire.com"),
+        # A French raise is headlined "Acme lève 2 M€". In the title, not
+        # anywhere on the page: "levée de fonds" alone finds guides, glossaries
+        # and the consultants who sell them.
+        "fr": ('{industry} intitle:lève ("M€" OR "millions d\'euros") after:{since} '
+               "-site:maddyness.com -site:frenchweb.fr -site:lesechos.fr -site:usine-digitale.fr "
+               "-site:journaldunet.com -site:linkedin.com -site:instagram.com -site:facebook.com "
+               "-site:bpifrance.fr"),
         "local": False,
     },
 }
 FUNDING_LOOKBACK_DAYS = 548       # ~18 months: older raises aren't news
 
-
-def preset_templates(spec: dict) -> tuple[str, ...]:
-    """A preset's search templates: one ``term``, or several ``terms``."""
+def preset_templates(spec: dict, language: str = "en") -> tuple[str, ...]:
+    """A preset's search templates in ``language``: one ``term``, or several
+    ``terms``. Empty when the preset has no version in that language."""
+    if language != "en":
+        found = spec.get(language)
+        return (found,) if found else ()
     return tuple(spec.get("terms") or (spec["term"],))
 
 # A hit on careers.acme.com is acme.com's careers page.
@@ -1310,30 +1386,58 @@ def build_queries(config, cities: list[str] | None = None,
     icp = config.icp
     terms = list(icp.industries) or [config.product.name]
     spec = PRESETS.get(preset) if preset else None
+    searches: list[tuple[str, str]] = [(t, "") for t in terms]     # (term, language)
     if spec:
-        templates = preset_templates(spec)
+        # One pass per configured language that has a version of the preset;
+        # English when none does (the YC preset has no French one).
+        languages = [lang for lang in (getattr(icp, "search_languages", None) or ["en"])
+                     if preset_templates(spec, lang)] or ["en"]
         since = (date.today() - timedelta(days=FUNDING_LOOKBACK_DAYS)).isoformat()
         from harvey.collectors.ats import role_keywords
-        roles = role_keywords(icp) if any("{role}" in tpl for tpl in templates) else [""]
-        terms = [tpl.format(industry=t, role=r, since=since)
-                 for r in roles for t in terms for tpl in templates]
+        searches = []
+        for lang in languages:
+            templates = preset_templates(spec, lang)
+            roles = role_keywords(icp) if any("{role}" in tpl for tpl in templates) else [""]
+            searches += [(tpl.format(industry=t, role=r, since=since), "" if lang == "en" else lang)
+                         for r in roles for t in terms for tpl in templates]
         places = cities if cities is not None else ([""] if not spec["local"] else list(icp.geography) or [""])
     else:
         # "roofing contractor" is one way to search for a roofer. Each
         # configured variant is another search in every city — ranks differ
         # by phrasing, and the email should quote the phrase that was used.
         variants = getattr(icp, "keyword_variants", {}) or {}
-        terms = list(dict.fromkeys(
-            v.strip() for t in terms for v in [t, *variants.get(t, [])] if v.strip()))
+        searches = [(t, "") for t in dict.fromkeys(
+            v.strip() for t in terms for v in [t, *variants.get(t, [])] if v.strip())]
         places = cities if cities is not None else list(icp.geography) or [""]
     coords = getattr(icp, "geo_coordinates", {}) or {}
 
     return [
         DiscoveryQuery(term=term, location=place, depth=depth, limit=limit,
-                       coordinate=coords.get(place, ""), preset=preset if spec else "")
-        for term in terms
+                       coordinate=coords.get(place, ""), preset=preset if spec else "",
+                       language=language)
+        for term, language in searches
         for place in places
     ]
+
+
+# Search syntax a preset wraps an industry in: never the industry itself.
+_SEARCH_GROUP = re.compile(r"\([^()]*\bOR\b[^()]*\)")
+_SEARCH_OPERATOR = re.compile(r"(?<!\S)-?(?:site|intitle|inurl|intext|after|before):\S+")
+
+
+def clean_industry(text: str) -> str:
+    """The industry inside the search that found a company. A preset stores
+    its whole search as the company's industry (the dashboard shows it as
+    "found by"); the writer wants "B2B SaaS", not 'B2B SaaS ("we raised" OR
+    raises) after:2025-04-26 -site:x.com'. Plain text comes back as it was."""
+    text = text or ""
+    if not (_SEARCH_OPERATOR.search(text) or _SEARCH_GROUP.search(text)):
+        return text.strip()
+    text = _SEARCH_GROUP.sub(" ", text)
+    text = re.sub(r'"[^"]*"', " ", text)
+    text = _SEARCH_OPERATOR.sub(" ", text)
+    text = re.sub(r"^\s*careers\b", " ", text.strip())
+    return re.sub(r"\s+", " ", text).strip(" ,;")
 
 
 def estimate_cost(provider_key: str, queries: list[DiscoveryQuery]) -> float:
@@ -1357,8 +1461,10 @@ async def run_discovery(
     problems that would otherwise poison every market you scale to.
     """
     from harvey.config import load_env
+    from harvey.icp_filter import excluded_by
     from harvey.signals import seed_signal_catalog
 
+    icp = getattr(config, "icp", None)
     provider = PROVIDERS.get(provider_key)
     if provider is None:
         raise ValueError(f"unknown discovery provider: {provider_key!r}")
@@ -1446,6 +1552,11 @@ async def run_discovery(
                         biz.domain = company_host(biz.domain)
                     if is_junk(biz.domain, biz.raw_title or biz.name):
                         report.junk += 1
+                        continue
+                    if excluded_by(icp, biz.name, biz.raw_title):
+                        # A competitor or a non-buyer by the user's own ICP:
+                        # never stored, so never profiled or written to.
+                        report.excluded += 1
                         continue
                     ident = biz.identity()
                     if not ident:
@@ -1538,7 +1649,7 @@ async def _upsert(state, biz: Business, query: DiscoveryQuery) -> tuple[str, boo
     company = Company(
         name=biz.name,
         domain=biz.domain,
-        website=biz.website,
+        website=site_root(biz.website, biz.domain),
         phone=biz.phone,
         industry=biz.category or query.term,
         location=biz.location or query.location,

@@ -19,10 +19,11 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 
+from harvey.icp_filter import excluded_by, has_exclusions, naf_excluded
 from harvey.public_http import public_http_client
 from harvey.startups import funding_text
 
-from harvey.collectors.ats import detect_board, matching_roles, read_board, role_keywords
+from harvey.collectors.ats import Posting, detect_board, matching_roles, read_board, role_keywords
 
 from harvey.collectors.discover import (
     name_from_domain, name_matches_domain, site_name_from_html,
@@ -95,6 +96,9 @@ TECH_FINGERPRINTS: dict[str, tuple[str, ...]] = {
     "Housecall Pro": (r"housecallpro",),
     "CallRail": (r"cdn\.callrail\.com",),
     "Stripe": (r"js\.stripe\.com",),
+    # The app frameworks a startup's own site is often built with.
+    "Next.js": (r"/_next/static/", r"__NEXT_DATA__"),
+    "Nuxt": (r"/_nuxt/", r"__NUXT__"),
 }
 
 GOOGLE_ADS = (r"googleadservices\.com", r"gtag/js\?id=AW-", r"google_conversion",
@@ -110,17 +114,21 @@ AI_CRAWLERS = ("gptbot", "google-extended", "ccbot", "anthropic-ai", "claudebot"
                "perplexitybot", "bytespider")
 
 TEAM_PATHS = ("/team", "/about", "/about-us", "/our-team", "/staff",
-              "/leadership", "/meet-the-team", "/company/team")
+              "/leadership", "/meet-the-team", "/company/team",
+              "/equipe", "/notre-equipe", "/a-propos", "/qui-sommes-nous")
 CAREERS_PATHS = ("/careers", "/jobs", "/join-us", "/employment", "/hiring",
-                 "/about/careers", "/careers/")
+                 "/about/careers", "/careers/", "/recrutement", "/carrieres", "/nous-rejoindre")
 # A homepage link to the careers page beats guessing paths: careers.acme.com
 # and /company/jobs are as common as /careers. Whole path segments and whole
 # anchors only: "/scheduling/hiring-marketplaces" is a product page.
 _CAREERS_HOST = re.compile(r"^(careers?|jobs|join)\.", re.I)
 _CAREERS_SEGMENTS = frozenset("""careers career jobs join join-us joinus work-with-us
-open-roles open-positions hiring""".split())
+open-roles open-positions hiring recrutement carrieres carrière carrières nous-rejoindre
+rejoignez-nous rejoindre-l-equipe emplois offres-emploi offres-d-emploi""".split())
 _CAREERS_ANCHOR = re.compile(r"^(careers?|jobs|join us|join (our|the) team|we['’]?re hiring"
-                             r"|open (roles|positions)|work with us)$", re.I)
+                             r"|open (roles|positions)|work with us"
+                             r"|recrutement|carri[èe]res?|nous rejoindre|rejoignez[- ]nous|on recrute"
+                             r"|nous recrutons|offres d['’]emploi|rejoindre l['’][ée]quipe)$", re.I)
 # Roles recorded per company from a board. The first few say it; twenty rows
 # of "Account Executive, <city>" don't say more.
 MAX_BOARD_ROLES = 5
@@ -147,22 +155,37 @@ hoa hoas condo condos association associations board boards community
 communities management property properties owners residents customer care
 scope alignment implementation consistency communication process driven
 focused structured
+équipe equipe notre nos accueil propos mentions légales legales recrutement
+carrières carrieres offres emploi actualités actualites presse tarifs plateforme
 """.split())
+
+# Name letters: ASCII plus the accented Latin letters French, Spanish and
+# German names carry ("Hélène", "Éric", "Müller"). re has no \p{Lu}.
+_UP = "A-ZÀ-ÖØ-ÞŒ"
+_LO = "a-zß-öø-ÿœ"
 
 # Tokens that are words, not names, whatever the vertical: abstract nouns
 # ("Scope Alignment", "Board Communication") and shouted acronyms ("HOA").
 _NOUN_SUFFIX = re.compile(r"(tion|tions|sion|sions|ness)$")
 
 
-def _is_name_token(token: str) -> bool:
+def _is_name_token(token: str, surname: bool = False) -> bool:
+    """``surname``: the last word of a name, which French sites write in
+    capitals ("Claire DUVAL"); anywhere else a shouted word is an acronym."""
+    from harvey.collectors.people import upper_surname_ok
     for part in token.split("-"):
         bare = part.strip(".,'")
         low = bare.lower()
         if low in NON_NAME_WORDS or _NOUN_SUFFIX.search(low):
             return False
-        if len(bare) >= 3 and bare.isupper():
+        if len(bare) >= 3 and bare.isupper() and not (surname and upper_surname_ok(bare)):
             return False
     return True
+
+
+def _is_name(tokens: list[str]) -> bool:
+    return bool(tokens) and all(_is_name_token(t, surname=i == len(tokens) - 1 and i > 0)
+                                for i, t in enumerate(tokens))
 
 
 # Block-level tags separate a name, its title, and the bio that follows; the
@@ -200,6 +223,9 @@ DECISION_MAKER_TITLES = (
     "office manager", "marketing director", "marketing manager",
     "director of marketing", "vice president", "vp ", "managing director",
     "chief", "director",
+    # French ("fondateur" also covers co-fondateur and cofondateur)
+    "fondateur", "fondatrice", "président", "gérant", "pdg", "dirigeant",
+    "directeur", "directrice",
 )
 
 
@@ -210,7 +236,10 @@ ROLE_HINT = re.compile(
     r"office|project|account|service|technician|installer|inspector|"
     r"vice president|vp|executive|lead|head of|chief|proprietor|attorney|lawyer|"
     r"dentist|orthodontist|periodontist|endodontist|hygienist|dds|dmd|esq|cpa|"
-    r"administrator|paralegal|associate|co-?owner|co-?founder)\b", re.I)
+    r"administrator|paralegal|associate|co-?owner|co-?founder|"
+    r"co-?fondat(?:eur|rice)s?|fondat(?:eur|rice)s?|présidente?|pdg|dg|gérante?|"
+    r"directeur|directrice|dirigeante?|responsable|associée?|ingénieure?|"
+    r"développeu(?:r|se)|chef de projet)\b", re.I)
 
 
 def title_looks_like_role(text: str) -> bool:
@@ -296,8 +325,8 @@ def _text(html: str) -> str:
 YC_OWNED_DOMAINS = ("ycombinator.com", "workatastartup.com", "startupschool.org")
 _YC = r"(?:YC|Y[\s-]?Combinator)"
 _YC_LINK_RE = re.compile(r"ycombinator\.com\\?/companies\\?/([a-z0-9][\w-]*)", re.I)
-YC_ABOUT_PATHS = ("/about", "/about-us", "/company", "/our-story")
-FUNDING_PATHS = ("/press", "/news", "/newsroom", "/blog")
+YC_ABOUT_PATHS = ("/about", "/about-us", "/company", "/our-story", "/a-propos", "/qui-sommes-nous")
+FUNDING_PATHS = ("/press", "/news", "/newsroom", "/blog", "/presse", "/actualites", "/actus")
 _YC_SEASONS = {"w": "W", "winter": "W", "s": "S", "summer": "S",
                "f": "F", "fall": "F", "x": "X", "spring": "X"}
 _SEASON_WORD = r"(Winter|Summer|Fall|Spring)"
@@ -597,7 +626,8 @@ _AMOUNT_WORD = (r"(\d[\d,]*(?:\.\d+)?)\s?(k|mm|mn|mio|m|bn|b|million|billion|tho
 _CURRENCY = {"eur": "€", "euro": "€", "euros": "€", "usd": "$", "dollar": "$", "dollars": "$",
              "gbp": "£", "pound": "£", "pounds": "£"}
 _MULTIPLIER = {"k": 1e3, "thousand": 1e3, "m": 1e6, "mm": 1e6, "mn": 1e6, "mio": 1e6, "million": 1e6,
-               "b": 1e9, "bn": 1e9, "billion": 1e9}
+               "b": 1e9, "bn": 1e9, "billion": 1e9,
+               "millions": 1e6, "md": 1e9, "mds": 1e9, "milliard": 1e9, "milliards": 1e9}
 _ROUND_RANK = {"Pre-seed": 1, "Seed": 2, "Bridge": 3}
 _CLAUSE = r"(?:[^.!?]|\.(?=\d))"     # the rest of the sentence; "$4.5M" isn't its end
 _RAISE_VERB = (r"(?P<verb>raised|raises|closed|closes|secured|secures|landed|lands|completed|completes"
@@ -634,7 +664,7 @@ _MONTH_DATE_RE = re.compile(
     r"\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?"
     r"|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+(?:(\d{1,2})(?:st|nd|rd|th)?,?\s+)?(20\d{2})\b", re.I)
 _ISO_DATE_RE = re.compile(r"\b(20\d{2})-(\d{2})-(\d{2})\b")
-_YEAR_RE = re.compile(r"(?:\bin\s+|\(\s*)(20\d{2})\b")
+_YEAR_RE = re.compile(r"(?:\b(?:in|en)\s+|\(\s*)(20\d{2})\b")
 _JSONLD_DATE_RE = re.compile(r'"datePublished"\s*:\s*"(20\d{2}-\d{2}-\d{2})')
 _META_DATE_RES = (
     re.compile(r"""<meta[^>]+(?:property|name)=["'](?:article:published_time|date|pubdate)["'][^>]*"""
@@ -644,6 +674,48 @@ _META_DATE_RES = (
 )
 _TIME_RE = re.compile(r"""<time\b[^>]*datetime=["'](20\d{2}-\d{2}-\d{2})""", re.I)
 _URL_DATE_RES = (re.compile(r"/(20\d{2})-(\d{2})-(\d{2})(?:[/-]|$)"), re.compile(r"/(20\d{2})/(\d{2})/"))
+
+# The same, in French: "Nous avons levé 2 M€", "Acme lève 3 millions d'euros",
+# "Acme annonce une levée de fonds de 1,5 M€", "Acme boucle un tour de table",
+# "Nous sommes ravis d'annoncer notre levée de fonds". Not "nous accompagnons
+# les startups dans leur levée de fonds", money raised for clients, or a VC's
+# new fund. A French headline says what the money is for ("lève 2 M€ pour
+# accélérer"), so "pour" alone doesn't make it someone else's money.
+_ROUND_FR = (r"(pr[ée][\s-]?amor[çc]age|amor[çc]age|s[ée]rie\s+[a-h](?![\w-])"
+             r"|seed(?=\s*(?:[,.;:)]|$|\s+(?:de|d['’]|men[ée]e?|aupr[èe]s|avec)\b)))")
+_AMOUNT_FR = (r"(\d{1,3}(?:[\s\u00a0\u202f.]\d{3})+|\d+(?:[.,]\d+)?)\s?"
+              r"(k|m|md|mds|millions?|milliards?)?\s?(?:€|d['’]\s?euros?\b|euros?\b)")
+_RAISE_VERB_FR = (r"(?P<verb>lèvent|lève|levé|lever|bouclent|boucle|bouclé|boucler|clôture|clôturé|clôturer"
+                  r"|finalise|finalisé|finaliser|réalise|réalisé|réaliser|sécurise|sécurisé|sécuriser"
+                  r"|annonce|annoncé|annoncer|obtient|obtenu|obtenir)")
+_SUBJECT_AUX_FR = (r"(?:\s+(?:a|avons|ont|vient\s+de|venons\s+de|viennent\s+de|récemment|officiellement"
+                   r"|aujourd['’]hui|enfin|également|déjà)|\s+(?:vient|venons|viennent)\s+d['’])*")
+_ANNOUNCE_FR = (r"(?:(?:aujourd['’]hui,?\s+)?nous\s+sommes\s+(?:très\s+|particulièrement\s+)?"
+                r"(?:ravis|ravies|fiers|fières|heureux|heureuses|enchantés|enchantées)\s+d['’]"
+                r"(?:annoncer|partager|vous\s+annoncer)(?:\s+que)?\s+)")
+_LEAD_IN_FR = (r"(?:(?:aujourd['’]hui|actualité|annonce|communiqué(?:\s+de\s+presse)?)\s*[,:–-]?\s+"
+               r"|(?:en|le|début|fin|courant)\s+(?:\d{1,2}(?:er)?\s+)?(?:[a-zéû]+\s+)?\d{4},?\s+)?")
+_RAISE_NOUN_FR = r"(?:levée\s+de\s+fonds|tour\s+de\s+table|financement)"
+_NOT_THEIR_RAISE_FR = re.compile(
+    r"\b(?:pour|au\s+profit\s+de|pour\s+le\s+compte\s+de)\s+(?:nos\s+|leurs\s+|ses\s+|des\s+|les\s+|une?\s+)?"
+    r"(?:clients?|startups?|start-ups?|entreprises|fondateurs?|porteurs?\s+de\s+projets?|associations?"
+    r"|participations|portefeuille|adhérents?|membres?|œuvres?|causes?)\b"
+    r"|\b(?:un|notre|son|leur|nouveau|premier|second|deuxième|troisième)\s+fonds\b(?!\s+propres)"
+    r"|\bparticipations?\s+(?:dans|au\s+capital)\b|\binvestir\b|\binvesti\s+dans\b"
+    r"|\b(?:dans|de)\s+(?:la|le)\s+(?:startup|start-up|société|levée\s+de\s+fonds)\s+(?:de\s+)?(?-i:[A-Z])", re.I)
+_NOT_FUNDING_MONEY_FR = re.compile(
+    r"\b(?:chiffre\s+d['’]affaires|revenus?|ventes|commandes|contrats?|subventions?|prêts?|crédits?|dons?"
+    r"|économies|transactions|volume|projets?|biens|logements|primes?|cagnotte|collecte|marché|marchés)\b"
+    r"|(?-i:\bCA\b)", re.I)
+_FUNDING_EVIDENCE_FR = re.compile(
+    r"\b(?:levée\s+de\s+fonds|tour\s+de\s+table|financement|investisseurs?|men[ée]e?\s+par|aupr[èe]s\s+d"
+    r"|capital[\s-]risque|business\s+angels?|fonds\s+d['’]investissement|amor[çc]age)", re.I)
+_CLAUSE_END_FR_RE = re.compile(r",\s+(?:et|mais|puis|avant|après|depuis)\b|;|\s+et\s+(?:en|le|puis|depuis)\b", re.I)
+_MONTHS_FR = {"janvier": 1, "février": 2, "fevrier": 2, "mars": 3, "avril": 4, "mai": 5, "juin": 6,
+              "juillet": 7, "août": 8, "aout": 8, "septembre": 9, "octobre": 10, "novembre": 11,
+              "décembre": 12, "decembre": 12}
+_MONTH_DATE_FR_RE = re.compile(
+    r"\b(?:(\d{1,2})(?:er)?\s+)?(" + "|".join(_MONTHS_FR) + r")\s+(20\d{2})\b", re.I)
 
 
 def _sentence_date(sentence: str) -> str:
@@ -655,6 +727,10 @@ def _sentence_date(sentence: str) -> str:
     if m:
         month = _MONTHS[m.group(1).lower()[:3]]
         return f"{m.group(3)}-{month:02d}" + (f"-{int(m.group(2)):02d}" if m.group(2) else "")
+    m = _MONTH_DATE_FR_RE.search(sentence)
+    if m:
+        month = _MONTHS_FR[m.group(2).lower()]
+        return f"{m.group(3)}-{month:02d}" + (f"-{int(m.group(1)):02d}" if m.group(1) else "")
     m = _YEAR_RE.search(sentence)
     return m.group(1) if m else ""
 
@@ -715,15 +791,28 @@ def _amount_in(text: str) -> str:
     if m:
         return _amount(m.group(1), m.group(2), m.group(3))
     m = re.search(_AMOUNT_WORD, text, re.I)
-    return _amount(_CURRENCY[m.group(3).lower()], m.group(1), m.group(2)) if m else ""
+    if m:
+        return _amount(_CURRENCY[m.group(3).lower()], m.group(1), m.group(2))
+    # "2 M€", "1,5 million d'euros", "2 500 000 €": the euro after the number.
+    m = re.search(_AMOUNT_FR, text, re.I)
+    if not m:
+        return ""
+    number = re.sub(r"[\s\u00a0\u202f]", "", m.group(1))
+    if re.fullmatch(r"\d{1,3}(?:\.\d{3})+", number):
+        number = number.replace(".", "")        # "2.500.000 €"
+    elif "," in number:
+        number = number.replace(",", ".")       # a French decimal comma: "1,5 M€"
+    return _amount("€", number, m.group(2))
 
 
 def _round_name(text: str) -> str:
     text = re.sub(r"\s+", " ", text.lower())
-    if text.startswith("pre"):
+    if text.startswith(("pre", "pré")):
         return "Pre-seed"
-    if text.startswith("series"):
+    if re.match(r"s[ée]ries? ", text):
         return "Series " + text[-1].upper()
+    if text.startswith("amor"):
+        return "Seed"
     return text.capitalize()
 
 
@@ -747,21 +836,41 @@ def funding_round(html: str, domain: str = "", url: str = "") -> dict | None:
     led = re.compile(
         rf"^{owner}\s+(?P<rest>(?:{_AMOUNT}\s+)?{_ROUND}(?:\s+(?:round|funding|financing))?"
         rf"(?:\s+(?:was|is|has been))?\s+(?:led|co-led|closed|backed)\b{_CLAUSE}{{0,160}})", re.I)
+    # The same three shapes in French.
+    subject_fr = r"(?:nous|la\s+société|l['’]entreprise|la\s+start-?up" + (rf"|{spelled}\b" if spelled else "") + r")"
+    raised_fr = re.compile(
+        rf"^{_LEAD_IN_FR}{_ANNOUNCE_FR}?{subject_fr},?{_SUBJECT_AUX_FR}(?:\s+|(?<=['’])){_RAISE_VERB_FR}\b"
+        rf"(?P<rest>{_CLAUSE}{{0,160}})", re.I)
+    owner_fr = r"(?:notre|nos" + (rf"|la\s+{_RAISE_NOUN_FR}\s+de\s+{spelled}" if spelled else "") + r")"
+    announced_fr = re.compile(
+        rf"^{_LEAD_IN_FR}(?:{_ANNOUNCE_FR}|annonce\s+de\s+|nous\s+annonçons\s+)(?:la\s+clôture\s+de\s+)?"
+        rf"{owner_fr}\s+(?P<rest>(?:première\s+|nouvelle\s+)?(?:{_RAISE_NOUN_FR}|{_ROUND_FR}){_CLAUSE}{{0,160}})", re.I)
+    led_fr = re.compile(
+        rf"^{owner_fr}\s+(?P<rest>(?:première\s+)?{_RAISE_NOUN_FR}{_CLAUSE}{{0,60}}?\s+(?:a\s+été|est|vient\s+d['’]être)\s+"
+        rf"(?:menée?|co-menée?|bouclée?|clôturée?|réalisée?|finalisée?)\b{_CLAUSE}{{0,160}})", re.I)
     claims = []
     for sentence in _lines(html):
+        french = False
         m = raised.search(sentence) or announced.search(sentence) or led.search(sentence)
+        if not m:
+            m = raised_fr.search(sentence) or announced_fr.search(sentence) or led_fr.search(sentence)
+            french = m is not None
         if not m:
             continue
         rest = m.group("rest")
-        end = _CLAUSE_END_RE.search(rest)
+        end = (_CLAUSE_END_FR_RE if french else _CLAUSE_END_RE).search(rest)
         rest = rest[:end.start()] if end else rest
-        if _NOT_THEIR_RAISE.search(rest):
+        if (_NOT_THEIR_RAISE_FR if french else _NOT_THEIR_RAISE).search(rest):
             continue
-        rnd = re.search(rf"\b{_ROUND}", rest, re.I)
+        rnd = re.search(rf"\b{_ROUND_FR}", rest, re.I) if french else None
+        rnd = rnd or re.search(rf"\b{_ROUND}", rest, re.I)
         amount = _amount_in(rest)
         if not rnd:
-            plain = (m.groupdict().get("verb") or "").lower().startswith("rais") and amount[-1:] in ("M", "B")
-            if not amount or _NOT_FUNDING_MONEY.search(rest) or not (plain or _FUNDING_EVIDENCE.search(rest)):
+            verb = (m.groupdict().get("verb") or "").lower()
+            plain = verb.startswith(("lev", "lèv") if french else "rais") and amount[-1:] in ("M", "B")
+            money, evidence = ((_NOT_FUNDING_MONEY_FR, _FUNDING_EVIDENCE_FR) if french
+                               else (_NOT_FUNDING_MONEY, _FUNDING_EVIDENCE))
+            if not amount or money.search(rest) or not (plain or evidence.search(rest)):
                 continue
         when = _not_future(_sentence_date(sentence[:m.start("rest")] + rest))
         claims.append({"round": _round_name(rnd.group(1)) if rnd else "", "amount": amount, "date": when})
@@ -797,6 +906,74 @@ def _page_title(html: str) -> str:
     return html_unescape(re.sub(r"(?s)<[^>]+>", " ", " ".join(parts))).lower()
 
 
+def _meta_description(html: str) -> str:
+    """The description a homepage gives of itself (meta or og:description)."""
+    for pat in (r"""(?i)<meta[^>]+name=["']description["'][^>]*content=["']([^"']*)""",
+                r"""(?i)<meta[^>]+property=["']og:description["'][^>]*content=["']([^"']*)"""):
+        m = re.search(pat, html or "")
+        if m:
+            return html_unescape(m.group(1)).strip()
+    return ""
+
+
+# ── what a freelance tech lead looks for ──
+
+# Spellings of one technology, folded to one key: "Next.js", "NextJS" and
+# "next js" are the same, and so are "k8s" and "Kubernetes".
+_STACK_ALIASES = ({"kubernetes", "k8s"}, {"mongodb", "mongo"}, {"postgresql", "postgres"},
+                  {"nodejs", "node"}, {"golang", "go"})
+_STACK_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+#-]*")
+
+
+def _stack_key(word: str) -> str:
+    return re.sub(r"[^a-z0-9+#]", "", (word or "").lower())
+
+
+def stack_keywords(icp) -> list[str]:
+    return [k.strip() for k in (getattr(icp, "stack_keywords", None) or [])
+            if isinstance(k, str) and k.strip()]
+
+
+def stack_matches(keywords: list[str], texts: list[str]) -> list[str]:
+    """The keywords (as you wrote them) that the texts mention."""
+    words = [_stack_key(w.rstrip(".-")) for t in texts for w in _STACK_TOKEN.findall(t or "")]
+    seen = set(words) | {a + b for a, b in zip(words, words[1:])}
+    found = []
+    for keyword in keywords:
+        key = _stack_key(keyword)
+        variants = {key}.union(*(group for group in _STACK_ALIASES if key in group))
+        # "go" and "node" alone are ordinary words: only their long forms
+        # count unless you wrote the short one yourself.
+        if key not in ("go", "node"):
+            variants -= {"go", "node"}
+        if key and variants & seen:
+            found.append(keyword)
+    return found
+
+
+_TECH_TITLE = re.compile(
+    r"(?i)\b(?:cto|chief technology|chief technical|vp (?:of )?engineering|"
+    r"head of (?:engineering|tech(?:nology)?|product engineering)|tech(?:nical)? lead|"
+    r"lead dev(?:eloper)?|engineering manager|technical co-?founder|"
+    r"direct(?:eur|rice) technique|responsable technique|(?:co-?)?fondat(?:eur|rice) technique|"
+    r"d[ée]veloppeu(?:r|se)|developer|engineer|ing[ée]nieure?|devops|full[- ]?stack|"
+    r"back[- ]?end|front[- ]?end)\b")
+
+
+def tech_leadership(people_found: list[dict]) -> tuple[int, str] | None:
+    """(1, why) when the team page lists founders or directors and nobody
+    technical; (0, the technical title) when someone is; None when the page
+    names no one in charge, which says nothing either way."""
+    from harvey.collectors.people import is_owner_title
+    tech = [p for p in people_found if _TECH_TITLE.search(p.get("title") or "")]
+    if tech:
+        return 0, tech[0]["title"]
+    leads = [p for p in people_found if is_owner_title(p.get("title") or "")]
+    if leads:
+        return 1, f"team page lists {len(leads)} founder(s) or director(s), nobody in a technical role"
+    return None
+
+
 class ProfileCollector:
     """Fetches a business's public pages and emits observations.
 
@@ -805,12 +982,14 @@ class ProfileCollector:
     """
 
     def __init__(self, state, confirmed: set[str] | None = None, timeout: float = 12.0,
-                 role_keywords: list[str] | None = None):
+                 role_keywords: list[str] | None = None, icp=None):
         self.state = state
         self.confirmed = confirmed if confirmed is not None else set()
         self.timeout = timeout
         # icp.hiring_signals (or icp.titles): which open roles are worth a row.
         self.role_keywords = list(role_keywords or [])
+        # The ICP, for what it rules out (icp.exclude_keywords / exclude_naf).
+        self.icp = icp
         self._client: httpx.AsyncClient | None = None
         self.site_names: dict[str, str] = {}
         # Hosts that answered with a bot challenge (SiteGround's 202,
@@ -818,6 +997,9 @@ class ProfileCollector:
         self.challenged: set[str] = set()
 
     def wants(self, code: str) -> bool:
+        if code == "ICP_EXCLUDED":
+            # Setting icp.exclude_* is the user's confirmation.
+            return has_exclusions(getattr(self, "icp", None))
         return code in self.confirmed
 
     async def __aenter__(self):
@@ -898,7 +1080,9 @@ class ProfileCollector:
                 break
         return await self._first_present(site, CAREERS_PATHS)
 
-    async def _hiring(self, site: str, home: str, domain: str, add) -> None:
+    async def _hiring(self, site: str, home: str, domain: str, add) -> list[str]:
+        """Record open roles; return the text read about them (titles and
+        descriptions, or the careers page), for the stack they mention."""
         curl, chtml = "", ""
         board = detect_board(home, domain)
         if board is None:
@@ -908,31 +1092,81 @@ class ProfileCollector:
         if postings is not None:
             add("OPEN_ROLES", num=len(postings), text=board.label, url=board.page_url)
             keywords = getattr(self, "role_keywords", None) or []
-            matched = matching_roles(postings, keywords)[:MAX_BOARD_ROLES]
-            for post in matched:
+            relevant = matching_roles(postings, keywords)
+            for post in relevant[:MAX_BOARD_ROLES]:
                 add("HIRING_ROLE", text=post.summary(), url=post.url or board.page_url)
-            if not matched:
+            if not relevant:
                 # The board answered and lists nothing relevant: say so, so
                 # last month's (now closed) roles stop being the current view.
                 add("HIRING_ROLE", num=0, url=board.page_url)
-            return
+            self._role_age(relevant, board, add)
+            if relevant:
+                remote = next((p for p in relevant if p.remote), None)
+                add("REMOTE_ROLE", num=1 if remote else 0,
+                    text=remote.summary() if remote else "",
+                    url=(remote.url if remote else "") or board.page_url)
+            return [f"{p.title} {p.text}" for p in postings]
         if board and not chtml:
             curl, chtml = await self._careers_page(site, home, domain)
         if chtml and self.wants("HIRING_ROLE"):
+            keywords = getattr(self, "role_keywords", None) or []
             roles = []
             for m in re.finditer(
                 r"(?is)<(h[2-5]|a|li)[^>]*>\s*([^<]{6,70})\s*</\1>", _strip_code(chtml)
             ):
-                t = re.sub(r"\s+", " ", m.group(2)).strip()
-                if re.search(r"\b(hiring|apply|position|opening|wanted|"
-                             r"technician|installer|sales|manager|foreman|"
-                             r"estimator|crew|representative)\b", t, re.I):
-                    if t.lower() not in [r.lower() for r in roles]:
-                        roles.append(t)
+                t = html_unescape(re.sub(r"\s+", " ", m.group(2))).strip()
+                if keywords:
+                    # Only the roles you listed: the rest of a careers page's
+                    # headings are "Ready to apply?", perks and other teams.
+                    keep = bool(matching_roles([Posting(title=t)], keywords))
+                else:
+                    keep = bool(re.search(r"\b(hiring|apply|position|opening|wanted|"
+                                          r"technician|installer|sales|manager|foreman|"
+                                          r"estimator|crew|representative|"
+                                          r"recrute|postuler|poste|développeur|développeuse|ingénieur|"
+                                          r"[hf]\s?/\s?[hf])\b", t, re.I))
+                if keep and t.lower() not in [r.lower() for r in roles]:
+                    roles.append(t)
                 if len(roles) >= 3:
                     break
             for r in roles:
                 add("HIRING_ROLE", text=r, url=curl)
+            if keywords and not roles:
+                # A careers page with none of your roles: say so, so an old
+                # row stops being the current view (as for a job board).
+                add("HIRING_ROLE", num=0, url=curl)
+        return [_text(chtml)] if chtml else []
+
+    @staticmethod
+    def _role_age(relevant, board, add) -> None:
+        """ROLE_OPEN_DAYS: how long the oldest dated relevant role has been
+        open. A role still open after weeks is one they can't fill."""
+        dated = [p for p in relevant if p.posted]
+        if not dated:
+            return
+        oldest = min(dated, key=lambda p: p.posted)
+        try:
+            days = (datetime.now(timezone.utc).date()
+                    - datetime.strptime(oldest.posted, "%Y-%m-%d").date()).days
+        except ValueError:
+            return
+        add("ROLE_OPEN_DAYS", num=max(0, days), text=oldest.summary(), url=oldest.url or board.page_url)
+
+    async def _registry(self, site: str, home: str, domain: str):
+        """The company's registry record, when its own site publishes its
+        SIREN: the homepage, its link to the legal notice, or (for a French
+        site) the usual legal-notice paths. None otherwise."""
+        from harvey.collectors.registry import LEGAL_PATHS, find_siren, legal_links, looks_french, lookup
+        siren = find_siren(home)
+        if not siren and looks_french(home, domain):
+            for url in legal_links(home, site) + [f"{site}{p}" for p in LEGAL_PATHS]:
+                siren = find_siren(await self._get(url))
+                if siren:
+                    break
+        if not siren:
+            return None
+        return await lookup(self._client, siren)
+
     async def _search_hit(self, company_id: str, code: str) -> bool:
         """Is the latest reading a preset search's hit? (see state.search_hit)"""
         if getattr(self, "state", None) is None:
@@ -1040,8 +1274,8 @@ class ProfileCollector:
         # Tag names match any case; the NAME must not — under a blanket (?i)
         # "Customer care" passes the Firstname Lastname capitalisation test.
         for m in re.finditer(
-            r"(?s)<((?i:h[1-5]|strong|b))[^>]*>\s*((?:Dr\.?\s+)?[A-Z][a-z'\-]+(?:\s+[A-Z]\.?)?"
-            r"(?:\s+(?:[A-Z][a-zA-Z'\-]+|van|von|de|der|del|la|le|di|da)){1,3}"
+            rf"(?s)<((?i:h[1-5]|strong|b))[^>]*>\s*((?:Dr\.?\s+)?[{_UP}][{_LO}'\-]+(?:\s+[{_UP}]\.?)?"
+            rf"(?:\s+(?:[{_UP}][{_UP}{_LO}'\-]+|van|von|de|der|del|la|le|di|da|du)){{1,3}}"
             r"(?:,?\s+(?:DDS|DMD|MD|Esq\.?|CPA|Jr\.?|Sr\.?|II|III))?)\s*</(?i:\1)>(?=(.{0,220}))",
             text_html
         ):
@@ -1064,7 +1298,7 @@ class ProfileCollector:
             # Reject headings that merely LOOK like names. Every token must be
             # plausibly a name part; one business word disqualifies the whole
             # match ("Request Service", "Baker History", "HOA Boards").
-            if not all(_is_name_token(t) for t in name.split()):
+            if not _is_name(name.split()):
                 continue
             split = split_person_name(name)
             if not split:
@@ -1079,7 +1313,7 @@ class ProfileCollector:
             add(split[0], split[1], title, re.sub(r"(?i)^dr\.?\s+", "", name))
         # Name and title on consecutive lines, or "Name, Title" on one.
         for p in people_from_lines(html, domain, site_name):
-            if all(_is_name_token(t) for t in p["first_name"].split() + p["last_name"].split()):
+            if _is_name(p["first_name"].split() + p["last_name"].split()):
                 add(p["first_name"], p["last_name"], p["title"], p["full_name"])
         return people
 
@@ -1111,6 +1345,21 @@ class ProfileCollector:
                 logger.info(f"profile: {domain} unreachable")
             return obs
         self.site_names[company_id] = site_name_from_html(home, domain)
+
+        # The language the site declares (<html lang="fr">): which language
+        # to write to them in when nothing else says where they are.
+        declared = re.search(r"""(?i)<html\b[^>]*\blang\s*=\s*["']?([a-z]{2})(?![a-z])""", home)
+        if declared:
+            add("SITE_LANGUAGE", text=declared.group(1).lower())
+
+        # What the user's ICP rules out, in the company's own words; the
+        # registry can add its activity code or closure below.
+        excluded: list[str] = []
+        if self.wants("ICP_EXCLUDED"):
+            hit = excluded_by(self.icp, self.site_names[company_id], _page_title(home),
+                              _meta_description(home))
+            if hit:
+                excluded.append(f"its site says \"{hit}\"")
 
         # Ads (they are spending TODAY — the strongest budget signal here)
         add("RUNNING_GOOGLE_ADS", num=1 if self._any(home, GOOGLE_ADS) else 0)
@@ -1237,19 +1486,31 @@ class ProfileCollector:
         # open roles → hiring intent. The job-board feed when their site
         # links one (titles, departments and dates for every role), else
         # whatever the careers page's own HTML lists. Any failure here costs
-        # only these two signals, never the rest of the profile.
-        if self.wants("HIRING_ROLE") or self.wants("OPEN_ROLES"):
+        # only these signals, never the rest of the profile.
+        hiring_text: list[str] = []
+        if any(self.wants(c) for c in ("HIRING_ROLE", "OPEN_ROLES", "ROLE_OPEN_DAYS",
+                                        "REMOTE_ROLE", "STACK_MATCH")):
             try:
-                await self._hiring(site, home, domain, add)
+                hiring_text = await self._hiring(site, home, domain, add)
             except Exception as e:
                 logger.info(f"profile: {domain} open roles unread: {type(e).__name__}: {e}")
 
-        # team page → people
-        if self.wants("CONTACT_FOUND") or self.wants("DECISION_MAKER_TITLE"):
+        # The stack they hire for or build with, against icp.stack_keywords.
+        # Nothing read about their roles and no framework on the homepage
+        # says nothing, so no row.
+        wanted_stack = stack_keywords(getattr(self, "icp", None))
+        if self.wants("STACK_MATCH") and wanted_stack:
+            found = stack_matches(wanted_stack, hiring_text + tech)
+            if found or hiring_text:
+                add("STACK_MATCH", num=len(found), text=", ".join(found))
+
+        # team page → people, and whether anyone there is technical
+        if any(self.wants(c) for c in ("CONTACT_FOUND", "DECISION_MAKER_TITLE", "NO_TECH_LEADER")):
             turl, thtml = await self._first_present(site, TEAM_PATHS)
             if thtml:
-                for person in self.detect_people(thtml, domain=domain,
-                                                 site_name=self.site_names.get(company_id, "")):
+                team = self.detect_people(thtml, domain=domain,
+                                          site_name=self.site_names.get(company_id, ""))
+                for person in team:
                     label = f"{person['first_name']} {person['last_name']}"
                     add("CONTACT_FOUND",
                         text=f"{label} — {person['title']}" if person["title"] else label,
@@ -1257,7 +1518,43 @@ class ProfileCollector:
                     if person["is_decision_maker"]:
                         add("DECISION_MAKER_TITLE",
                             text=f"{label} — {person['title']}", url=turl)
+                verdict = tech_leadership(team)
+                if verdict is not None:
+                    # A team page is rarely complete: likely, not certain.
+                    add("NO_TECH_LEADER", num=verdict[0], text=verdict[1], conf=0.7, url=turl)
 
+        # The French registry, when the site publishes its SIREN: age, size,
+        # activity, closure, and the legal directors (who decides).
+        from harvey.collectors.registry import REGISTRY_SIGNALS, annuaire_url
+        naf_rules = getattr(getattr(self, "icp", None), "exclude_naf", None)
+        if any(self.wants(c) for c in REGISTRY_SIGNALS) or (naf_rules and self.wants("ICP_EXCLUDED")):
+            try:
+                record = await self._registry(site, home, domain)
+            except Exception as e:
+                logger.info(f"profile: {domain} registry unread: {type(e).__name__}: {e}")
+                record = None
+            if record is not None:
+                where = annuaire_url(record.siren)
+                age = record.age_years()
+                if age is not None:
+                    add("COMPANY_AGE", num=age, text=record.created, url=where)
+                if record.headcount:
+                    label, lowest = record.headcount
+                    year = f" ({record.headcount_year})" if record.headcount_year else ""
+                    add("HEADCOUNT_BAND", num=lowest, text=label + year, url=where)
+                if record.naf:
+                    add("NAF_CODE", text=record.naf, url=where)
+                for director in record.directors:
+                    add("REGISTRY_VERIFIED", text=director.label, url=where)
+                if record.closed:
+                    excluded.append("the registry says it has closed")
+                naf_hit = naf_excluded(getattr(self, "icp", None), record.naf)
+                if naf_hit:
+                    excluded.append(f"its activity code {record.naf} is under {naf_hit}")
+
+        # Written either way, so a changed exclusion list takes effect on the
+        # next profile instead of an old "excluded" lasting forever.
+        add("ICP_EXCLUDED", num=1 if excluded else 0, text="; ".join(excluded))
         return obs
 
     async def _improve_name(self, company: dict, domain: str):
@@ -1330,8 +1627,9 @@ async def profile_companies(state, companies: list[dict], config=None) -> tuple[
         return 0, ""
     run_id = await state.start_run("profile", provider="http")
     try:
-        keywords = role_keywords(getattr(config, "icp", None))
-        async with ProfileCollector(state, confirmed, role_keywords=keywords) as collector:
+        icp = getattr(config, "icp", None)
+        keywords = role_keywords(icp)
+        async with ProfileCollector(state, confirmed, role_keywords=keywords, icp=icp) as collector:
             n = await collector.run(companies, run_id=run_id)
         await state.finish_run(run_id, records=n, cost_usd=0.0)
         return n, run_id

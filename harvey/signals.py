@@ -172,6 +172,20 @@ SIGNAL_CATALOG: list[dict] = [
         "confidence_floor": 0.0,
     },
     {
+        "code": "SITE_LANGUAGE",
+        "label": "Site language",
+        "description": (
+            "The language their homepage declares (<html lang=\"fr\">). With "
+            "channels.email.language on auto, a French site gets French emails "
+            "even when nothing else says where the company is."
+        ),
+        "category": "profile",
+        "value_type": "text",
+        "collector": "profile",
+        "cost_note": "free (homepage HTML)",
+        "confidence_floor": 0.0,
+    },
+    {
         "code": "TECH_STACK",
         "label": "Website platform / tools",
         "description": "What the site is built on and which tools it runs (WordPress, Shopify, HubSpot, chat widgets, booking tools).",
@@ -298,6 +312,125 @@ SIGNAL_CATALOG: list[dict] = [
         "confidence_floor": 0.0,
     },
 
+    {
+        "code": "ROLE_OPEN_DAYS",
+        "label": "Days a relevant role has been open",
+        "description": (
+            "How long the oldest of your hiring_signals roles has been open on the job "
+            "board their site links to, from its posting date. A role still open after "
+            "45 days is one they're struggling to fill: someone who can cover it while "
+            "they hire is the pitch. Only boards that date their roles say this."
+        ),
+        "category": "profile",
+        "value_type": "num",
+        "collector": "profile",
+        "cost_note": "free (included in the job-board feed read)",
+        "confidence_floor": 0.0,
+    },
+    {
+        "code": "REMOTE_ROLE",
+        "label": "Relevant role open to remote",
+        "description": (
+            "One of your hiring_signals roles on their job board is remote: the board "
+            "says so, or the title or location does (remote, télétravail). A company "
+            "that hires remotely is one that works with people it doesn't sit next to."
+        ),
+        "category": "profile",
+        "value_type": "bool",
+        "collector": "profile",
+        "cost_note": "free (included in the job-board feed read)",
+        "confidence_floor": 0.0,
+    },
+    {
+        "code": "STACK_MATCH",
+        "label": "Uses your stack",
+        "description": (
+            "Which of your icp.stack_keywords their job posts, careers page or site "
+            "framework mention (NestJS, Kafka, Next.js...), and how many. Someone "
+            "who already knows their stack starts on day one."
+        ),
+        "category": "profile",
+        "value_type": "num",
+        "collector": "profile",
+        "cost_note": "free (job-board feed, careers page, homepage HTML)",
+        "confidence_floor": 0.0,
+    },
+    {
+        "code": "NO_TECH_LEADER",
+        "label": "No technical lead on the team page",
+        "description": (
+            "Their team page lists founders or directors and nobody in a technical "
+            "role (no CTO, tech lead, developer or engineer). Likely a non-technical "
+            "founding team building software. Team pages are often incomplete, so "
+            "it's recorded as likely, not certain; a page naming no one in charge "
+            "records nothing."
+        ),
+        "category": "profile",
+        "value_type": "bool",
+        "collector": "profile",
+        "cost_note": "free (team page)",
+        "confidence_floor": 0.0,
+    },
+    {
+        "code": "COMPANY_AGE",
+        "label": "Company age (French registry)",
+        "description": (
+            "Years since the company was registered, from the French company registry "
+            "(SIRENE), for a company whose own site publishes its SIREN, as French law "
+            "requires. 1-5 years is a young company still building its product."
+        ),
+        "category": "profile",
+        "value_type": "num",
+        "collector": "registry",
+        "cost_note": "free (public registry API)",
+        "confidence_floor": 0.0,
+    },
+    {
+        "code": "HEADCOUNT_BAND",
+        "label": "Headcount band (French registry)",
+        "description": (
+            "The registry's band of salaried staff (1–2, 3–5, 6–9, 10–19...), stored as "
+            "the band's lowest figure with its year. Updated once a year by INSEE, so "
+            "a fast-growing startup may be past it."
+        ),
+        "category": "profile",
+        "value_type": "num",
+        "collector": "registry",
+        "cost_note": "free (public registry API)",
+        "confidence_floor": 0.0,
+    },
+    {
+        "code": "NAF_CODE",
+        "label": "Activity code (French registry)",
+        "description": (
+            "The company's registered activity code (NAF/APE, e.g. 62.01Z software "
+            "development, 58.29C software publishing). icp.exclude_naf rules out "
+            "codes you never sell to, such as staffing (78.) or IT consultancies."
+        ),
+        "category": "profile",
+        "value_type": "text",
+        "collector": "registry",
+        "cost_note": "free (public registry API)",
+        "confidence_floor": 0.0,
+    },
+    {
+        "code": "ICP_EXCLUDED",
+        "label": "Ruled out by your ICP",
+        "description": (
+            "The company is one your ICP rules out: its own name, page title or "
+            "description uses a word in icp.exclude_keywords (a competitor, a "
+            "recruiter, a fund), or the registry gives an activity code in "
+            "icp.exclude_naf, or says it has closed. Recorded whenever those lists "
+            "are set (setting them is the confirmation); excluded companies are "
+            "skipped when Harvey looks for contacts."
+        ),
+        "category": "profile",
+        "value_type": "bool",
+        "collector": "profile",
+        "cost_note": "free (homepage HTML, public registry)",
+        "confidence_floor": 0.0,
+    },
+
     # ── People: who decides ──
     {
         "code": "CONTACT_FOUND",
@@ -323,13 +456,14 @@ SIGNAL_CATALOG: list[dict] = [
         "code": "REGISTRY_VERIFIED",
         "label": "Confirmed in a public registry",
         "description": (
-            "The person was confirmed in an authoritative public registry "
-            "(licensing board, professional registry). Also filters out "
-            "scraping artifacts — a name that matches nothing usually wasn't a person."
+            "A director on the company's legal record: for a French company whose "
+            "site publishes its SIREN, each president, managing director (DG) or "
+            "gérant the registry names, with their role. They are who decides, "
+            "and Harvey can reach them when the team page names no one."
         ),
         "category": "people",
         "value_type": "text",
-        "collector": "people",
+        "collector": "registry",
         "cost_note": "free (public registry API)",
         "confidence_floor": 0.0,
     },

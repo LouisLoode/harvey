@@ -155,11 +155,11 @@ harvey run
 
 This is the part that makes Harvey different from a black box, and it is deliberately not skippable.
 
-Harvey knows how to collect **29 signals** about a business. It does not collect any of them until you say so. On first run it *proposes* the catalog; you confirm, skip, or reject each one in the dashboard or from the terminal:
+Harvey knows how to collect **38 signals** about a business. It does not collect any of them until you say so. On first run it *proposes* the catalog; you confirm, skip, or reject each one in the dashboard or from the terminal:
 
 ```bash
 harvey signals                       # review the catalog
-harvey signals --confirm free        # everything that costs nothing (26 of them)
+harvey signals --confirm free        # everything that costs nothing (35 of them)
 harvey signals --confirm SERP_RANK   # a paid one, opted into explicitly
 ```
 
@@ -177,10 +177,15 @@ Every signal shows what it is in plain language, **what it costs**, and how many
 | | `NO_ONLINE_BOOKING` | Leads have to phone in, so after-hours demand is lost. |
 | | `NO_SCHEMA_MARKUP` | A concrete, checkable SEO gap you can name in an email. |
 | | `BLOG_STALE` | Content marketing started and abandoned. |
-| | `SITE_PAGE_COUNT`, `TECH_STACK`, `BLOCKS_AI_CRAWLERS` | Size, platform, AI-search visibility. |
+| | `SITE_PAGE_COUNT`, `TECH_STACK`, `BLOCKS_AI_CRAWLERS`, `SITE_LANGUAGE` | Size, platform, AI-search visibility, and the language the site declares (for writing to them in it). |
 | | `HIRING_ROLE` / `OPEN_ROLES` | What they're hiring for, and how many roles are open. When their site links a Greenhouse, Lever, Ashby or Workable board, Harvey reads that board's public feed (one request): roles matching `icp.hiring_signals` (else `icp.titles`), with department, location, posting date and the posting's URL; when the board lists none, it records "not hiring" so a closed role stops counting. Otherwise it reads the careers page. Set `hiring_signals` to the roles that mean they're buying: the `titles` fallback names who you email, so "CEO" only matches a CEO opening (never "Assistant to the CEO"), which is rarely the signal you want. |
 | | `YC_BACKED`, `ACCELERATOR`, `FUNDING_ROUND` | A startup, as its own site says: YC or another accelerator (with the batch or cohort), or a raise it announced (round, amount, date). |
-| **People** | `CONTACT_FOUND`, `DECISION_MAKER_TITLE`, `LIKELY_OWNER`, `REGISTRY_VERIFIED` | Who decides, and whether they own the place. |
+| | `ROLE_OPEN_DAYS` / `REMOTE_ROLE` | How long the oldest of your `hiring_signals` roles has been open on their job board (45+ days: they can't fill it), and whether it's remote. |
+| | `STACK_MATCH` | Which of your `icp.stack_keywords` their job posts, careers page or site framework mention (NestJS, Kafka, Next.js...). |
+| | `NO_TECH_LEADER` | Their team page lists founders or directors and nobody technical: likely a non-technical team building software. |
+| | `COMPANY_AGE`, `HEADCOUNT_BAND`, `NAF_CODE` | For a French company whose site publishes its SIREN: age, headcount band and activity code, from the French company registry (one free request). |
+| | `ICP_EXCLUDED` | Ruled out by `icp.exclude_keywords` (a competitor, a recruiter, a fund) or `icp.exclude_naf`, or closed. Skipped when Harvey looks for contacts. |
+| **People** | `CONTACT_FOUND`, `DECISION_MAKER_TITLE`, `LIKELY_OWNER`, `REGISTRY_VERIFIED` | Who decides, and whether they own the place. `REGISTRY_VERIFIED`: the president, DG or gérant on a French company's legal record, who Harvey can reach when the team page names no one. |
 | **Contact** | `EMAIL_PATTERN`, `EMAIL_STATUS`, `CONTACT_FORM_URL` | Whether you can actually reach them. |
 
 ### Then a cohort is a query, not a list
@@ -262,6 +267,22 @@ your industries for companies whose own careers pages list one of your
 are left out of the search, since a board page names a board, not a website
 to profile. Confirm `HIRING_ROLE` and profiling reads the board their site links
 to and records the role; the search hit alone records nothing.
+
+**Selling to French startups?** Set `icp.search_languages: [fr]` (or
+`[en, fr]` for both, which doubles the estimate). The `funding` and `hiring`
+presets then also search Google France in French ("lève 2 M€", "levée de
+fonds", "recrutement", "nous rejoindre"), with the French tech press, company
+registries, job boards and freelance marketplaces left out. The signals read
+French too: "Nous avons levé 2 M€", "Acme boucle un tour de table de 5 M€ en
+série A", dates like "12 février 2026", and careers and press pages at
+`/recrutement`, `/nous-rejoindre`, `/presse`. Money that isn't their raise
+("pour nos clients", "un fonds de 100 M€", "2 M€ de chiffre d'affaires")
+doesn't count. `yc` and `accelerator` have no French version and search in
+English.
+
+> **Serper's free tier** refuses searches with operators (`site:`, `after:`,
+> which every preset uses) past 10 results. Harvey retries those at 10 on
+> its own, so a preset run on a free key gets the first 10 results a search.
 
 Cities geocode themselves (cached forever, one lookup each). Directories, aggregators and institutions are filtered by pattern, not a blocklist — `en.wikipedia.org` and `biz.yelp.com` never make it in.
 

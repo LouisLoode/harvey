@@ -43,6 +43,7 @@ SOUNDS-HUMAN CHECKS — the patterns that still give AI away after the rules abo
 - Shallow -ing riders tacked onto a sentence ("..., helping you grow"). Cut them.
 - Curly quotes or fancy punctuation. Straight quotes only.
 - Every sentence the same length. Mix short sentences with longer ones, the way people write when they type fast.
+- Anything that implies the reader is failing or can't do their own job ("not always by someone who can judge a developer", "before anyone has the hindsight to challenge them"). Describe the situation many teams are in, never their shortcoming. They should feel understood, not diagnosed.
 
 SPAM FILTER RULES — these words and patterns get emails junked. NEVER use:
 - "free", "guarantee", "guaranteed", "risk-free", "no risk", "no cost", "act now", "limited time", "limited offer", "exclusive deal", "special offer", "discount", "% off", "save big", "winner", "congratulations", "urgent", "don't miss", "last chance" (in subject lines), "buy now", "click here", "click below", "sign up now", "make money", "increase sales", "double your", "100%", "$$$"

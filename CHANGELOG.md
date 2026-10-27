@@ -9,6 +9,62 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **Contacts: sort, filter by email, and pages, done by the database.**
+  Click a column (name, company, email, score, status, added) to sort it;
+  filter by email (verified, catch-all, unverified, invalid) on top of the
+  status filter; search ignores case and accents. The new `/api/contacts`
+  sorts, filters, searches and pages in SQL, so the page holds 50 contacts
+  at a time however long the list gets, and the counts on each filter
+  honour the search and the other filter.
+
+- **First emails for selling a service.** `writer.first_email: offer` lets
+  the first email say who is writing and what they do for the reader, tied
+  to one observation and ending on a concrete low-effort offer (the default,
+  `observation`, is unchanged). `skills/voice_samples.md` (kept out of git)
+  holds emails you wrote; the writer matches their voice. `writer.critique`
+  drafts three first emails and keeps the one a review call rates best.
+- **`channels.email.contacts_per_company`.** Cold email to at most that many
+  people per company at a time, the most senior first (0, no limit, by
+  default).
+- **`SITE_LANGUAGE`.** The language a homepage declares, so a French site
+  gets French emails even when nothing else says where the company is.
+
+- **Signals for selling to a company that needs a tech lead.**
+  `ROLE_OPEN_DAYS` (how long the oldest of your `hiring_signals` roles has
+  been open on the job board their site links to), `REMOTE_ROLE`,
+  `STACK_MATCH` (which `icp.stack_keywords` their job posts, careers page or
+  site framework mention; job posts are now read with their descriptions
+  where the feed has one) and `NO_TECH_LEADER` (founders on the team page,
+  nobody technical). The writer, the reply handler and Outbox review see them.
+  `TECH_STACK` recognises Next.js and Nuxt.
+- **The French company registry.** When a company's own site publishes its
+  SIREN, the profile stage asks `recherche-entreprises.api.gouv.fr` about that
+  exact number (one free request, no key): `COMPANY_AGE`, `HEADCOUNT_BAND`,
+  `NAF_CODE`, and `REGISTRY_VERIFIED` for each president, DG or gérant. Only
+  people in a director's role, only public records, never birth dates. The
+  contacts backfill can reach a director when the team page names no one.
+- **ICP exclusions.** `icp.exclude_keywords` (whole words, case and accents
+  ignored) and `icp.exclude_naf` (activity-code prefixes) rule out
+  competitors and non-buyers: discovery doesn't store them, profiling records
+  `ICP_EXCLUDED`, and the contacts backfill skips them.
+- **French emails to French companies.** `channels.email.language` (`auto`
+  by default, or `en` / `fr`): French when the registry knows the company,
+  its domain is .fr or it is located in France or a French-speaking region.
+  Batches split by language, the footer uses `compliance.opt_out_line_fr`,
+  and French opt-outs ("non merci", "désinscription") are honoured.
+- **Quiet hours on chosen days.** `usage.quiet_hours.days` (every day by
+  default). Quiet 08:00-20:00 on `[mon, tue, wed, thu, fri]` keeps Harvey's
+  work, and its Claude use, to nights and weekends.
+
+- **French startups.** `icp.search_languages: [fr]` makes the `funding` and
+  `hiring` presets search Google France in French ("lève 2 M€", "levée de
+  fonds", "recrutement"), on Serper (`gl`/`hl`) and DataForSEO SERP (France,
+  `fr`). `FUNDING_ROUND` reads a raise announced in French, with its amount in
+  euros ("1,5 M€", "3 millions d'euros"), its round ("amorçage", "série A") and
+  a French date, and turns down money raised for clients, a VC's new fund or
+  revenue. Careers, About and press pages are also found at their French
+  paths. French tech press, registries, job boards and freelance marketplaces
+  are filtered as junk. Defaults to `[en]`, so nothing changes unless set.
 - **TrulyInbox for warmup.** Harvey now recommends TrulyInbox for warming and
   keeping sending mailboxes healthy, and reads it: `harvey trulyinbox connect`
   (or the new warmup step on the dashboard's setup checklist) checks a key and
@@ -179,6 +235,25 @@ minor versions can still change behaviour.
 
 ### Changed
 
+- **The offer-style first email asks for a reply, not a meeting.** Four
+  short sentences at most: the trigger, the problem it implies in the
+  reader's words (no stack talk to a non-technical reader), half a sentence
+  on who is writing, and one question with an easy way to say no. Under 60
+  words, never a call or a length of time. It picks the offer that fits the
+  company when the product knowledge lists offers by situation, and never
+  offers what they are past. Follow-ups wait 4 and 6 days and each brings
+  something new.
+- **The contacts backfill starts with buying intent.** Companies showing the
+  most intent signals (hiring, a role open for weeks, no tech lead, your
+  stack, remote, funding, an accelerator, a registry record) are visited
+  first, then the rest rotate as before.
+- **French team pages are read.** Accented names (Hélène, Éric), surnames in
+  capitals (Claire DUVAL) and French titles (fondateur, président, gérant,
+  directeur général, PDG) were rejected; they are now people, owners and
+  roles, and "fondée par" sentences name a founder. Team pages are also
+  looked for at `/equipe`, `/a-propos` and `/qui-sommes-nous`. Email local
+  parts transliterate accents (François → francois) instead of dropping them.
+
 - **Setup comes first on Today.** Until setup is finished, the checklist sits at
   the top of the Today page as a "Finish setting up Harvey" card, with the next
   step highlighted, instead of at the bottom of the side column.
@@ -212,6 +287,36 @@ minor versions can still change behaviour.
 
 ### Fixed
 
+- **A company with a CTO was offered a CTO.** `NO_TECH_LEADER` at 0 (the
+  team page lists a technical lead) never reached the writer; it now does,
+  with that lead's title.
+- **French drafts showed the English footer in the Outbox.** Each draft now
+  shows the footer in its own language, as it will be sent.
+- **News headlines as company names.** A funding search could name a company
+  "Acme lève 2 M€ pour..." and give the article as its website. The name is
+  now what comes before the verb, the website the homepage (the article stays
+  the source), and existing rows are repaired on start.
+- **The writer was given a search string as the company's industry.** A
+  discovery preset stores its search as the industry, and it reached the
+  writer's facts and campaign names as such ('B2B SaaS ("we raised" OR
+  ...) -site:...'). The writer now reads the industry inside it.
+- **French first email, English follow-ups.** A company with no location
+  and no .fr domain was batched as English while its first email came out in
+  French; the site's declared language and the company's description now
+  count when picking the language.
+- **Emails that talked down to the reader.** The writer prompt now forbids
+  implying the reader can't do their job.
+
+- **`HIRING_ROLE` from a careers page kept any heading.** Without a job
+  board, Harvey recorded headings such as "Ready to apply?" or a sales role
+  as hiring intent. It now keeps only your `hiring_signals` roles (entities
+  decoded) and records 0 when the page lists none.
+
+- **Startup presets on Serper's free tier.** Serper refuses a search with
+  operators (`site:`, `after:`) past 10 results on a free key ("Query pattern
+  not allowed for free accounts"), so every `funding`, `hiring`, `yc` and
+  `accelerator` search failed at the default depth of 30. Harvey now retries
+  at 10.
 - **Replies remember the whole conversation** (closes #97). A reply was
   written from the last six messages only, so a requirement the prospect
   stated earlier ("synthetic data only, processed in the EU") dropped out

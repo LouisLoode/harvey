@@ -104,3 +104,44 @@ async def startup_facts(state, company_id: str, today: date | None = None) -> li
     if funding is not None:
         facts.append(_funding_fact(funding, today))
     return facts
+
+
+async def hiring_facts(state, company_id: str, today: date | None = None) -> list[str]:
+    """Fact lines about a company's tech hiring, for the writer's prompt:
+    a relevant role open for weeks (ROLE_OPEN_DAYS), remote (REMOTE_ROLE),
+    the stack they mention (STACK_MATCH) and a team with nobody technical
+    (NO_TECH_LEADER). [] when nothing is known; a failed read is the same."""
+    lookup = getattr(state, "get_observations", None)
+    if not company_id or lookup is None:
+        return []
+
+    async def latest(code):
+        try:
+            rows = await lookup(company_id=company_id, signal_code=code, latest_only=True, limit=1)
+        except Exception:
+            return None
+        return rows[0] if rows else None
+
+    facts: list[str] = []
+    role = await latest("ROLE_OPEN_DAYS")
+    if role and role.get("value_num") is not None:
+        days = int(role["value_num"])
+        observed = _as_date(str(role.get("observed_at") or "")[:10])
+        if observed:
+            days += max(0, ((today or date.today()) - observed).days)
+        facts.append(f"- Hiring: {role.get('value_text') or 'a role you cover'}; open about "
+                     f"{days} day(s) on their job board, as the board says")
+    remote = await latest("REMOTE_ROLE")
+    if remote and remote.get("value_num") == 1:
+        facts.append("- That role is open to remote work, as their job board says")
+    stack = await latest("STACK_MATCH")
+    if stack and (stack.get("value_num") or 0) > 0 and stack.get("value_text"):
+        facts.append(f"- Their job posts or site mention: {stack['value_text']}")
+    lead = await latest("NO_TECH_LEADER")
+    if lead and lead.get("value_num") == 1:
+        facts.append("- Their team page lists founders but nobody in a technical role "
+                     "(team pages are often incomplete: don't claim they have no one)")
+    elif lead and lead.get("value_num") == 0 and lead.get("value_text"):
+        facts.append(f"- They have a technical lead: their team page lists a {lead['value_text']}. "
+                     "Don't offer to be their CTO or to build their first version")
+    return facts

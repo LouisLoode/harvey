@@ -918,6 +918,29 @@ async def get_prospects():
     return rows
 
 
+@app.get("/api/contacts")
+async def get_contacts(sort: str = "added", dir: str = "desc", status: str = "all",
+                       email: str = "all", q: str = "", offset: int = 0, limit: int = 50):
+    """One page of the Contacts tab, sorted, filtered and searched in the
+    database: the page never loads the whole list, however long it gets."""
+    try:
+        state = _state()
+        await state.init_db()
+        page = await state.contacts_page(sort=sort, direction=dir, status=status, email=email,
+                                         query=q[:200], offset=offset, limit=limit)
+        ids = [r["id"] for r in page["items"]]
+        # Someone whose opt-out was undone keeps a way to see what happened.
+        undone = {r["pid"] for r in await query_db(
+            "SELECT DISTINCT json_extract(details_json, '$.prospect_id') AS pid FROM actions "
+            "WHERE action_type = 'opt_out_undone' AND json_valid(details_json) "
+            f"AND json_extract(details_json, '$.prospect_id') IN ({_in(ids)})", tuple(ids))} if ids else set()
+        for r in page["items"]:
+            r["opt_out_undone"] = r["id"] in undone
+        return page
+    except Exception as e:
+        return {"error": str(e)}
+
+
 def _state():
     from harvey.state import StateManager
     return StateManager(db_path=str(DB_PATH))
@@ -926,6 +949,7 @@ def _state():
 # What a reviewer needs next to a draft to check its claims against the facts.
 OUTBOX_CONTEXT_SIGNALS = (
     "TECH_STACK", "INCUMBENT_AGENCY", "HIRING_ROLE", "RUNNING_GOOGLE_ADS", "NO_ONLINE_BOOKING",
+    "ROLE_OPEN_DAYS", "NO_TECH_LEADER", "STACK_MATCH", "REMOTE_ROLE",
 )
 
 
@@ -1016,8 +1040,9 @@ async def get_outbox_api():
         return {
             **_compliance_view(),
             "paused": await state.get_setting("sending_paused"),
-            "pending": await _with_context(
-                await state.get_outbox(status="pending_review", limit=100)),
+            "pending": [{**item, "footer": _compliance_view(item.get("body") or "")["footer"]}
+                        for item in await _with_context(
+                            await state.get_outbox(status="pending_review", limit=100))],
             # Mail going out right now leads the list.
             "approved": (await state.get_outbox(status="sending", limit=10)
                          + await state.get_outbox(status="approved", limit=50)),
@@ -1142,7 +1167,7 @@ async def outbox_edit(item_id: str, request: Request):
         # recipient isn't something an edit can change.
         from harvey.gate import pre_send_check
         checked = text
-        footer = _compliance_view()["footer"]
+        footer = _compliance_view(text)["footer"]
         if item.get("kind") == "sequence" and footer and not text.rstrip().endswith(footer):
             checked = text.rstrip() + "\n\n" + footer  # as the Sender will send it
         gate = pre_send_check("reviewer@example.com", subject, checked)
@@ -1202,13 +1227,17 @@ def _send_as() -> str:
         return ""
 
 
-def _compliance_view() -> dict:
+def _compliance_view(text: str = "") -> dict:
     """What the Sender adds under each cold email, so a reviewer sees the
-    email as it will leave, and the warning when the address is missing."""
+    email as it will leave, and the warning when the address is missing.
+    ``text``: the email it goes under; its language picks the opt-out line,
+    as the Sender does (English when none is given)."""
     try:
         from harvey.config import compliance_footer_lines, compliance_notice, load_config
+        from harvey.language import text_language
         config = load_config()
-        return {"footer": "\n".join(compliance_footer_lines(config)),
+        language = text_language(text) if text else "en"
+        return {"footer": "\n".join(compliance_footer_lines(config, language)),
                 "compliance_notice": compliance_notice(config)}
     except Exception:
         return {"footer": "", "compliance_notice": ""}
@@ -1333,9 +1362,11 @@ async def mark_prospect_sent(prospect_id: str, request: Request):
             changed = await state.restore_hand_cancelled_outbox(
                 prospect_id, reason=HAND_SENT_REASON)
         if sent:
-            # Open in Gmail adds today's footer; remember it as Harvey's text.
-            footer = _compliance_view()["footer"]
-            await state.remember_footer_lines(footer.split("\n"))
+            # Open in Gmail adds today's footer; remember it as Harvey's text,
+            # in both languages it can be in.
+            for language_sample in ("", "vous votre"):
+                footer = _compliance_view(language_sample)["footer"]
+                await state.remember_footer_lines(footer.split("\n"))
         await state.log_action(
             action_type="manual_send" if sent else "manual_send_undone",
             agent="user",
@@ -1403,7 +1434,6 @@ async def get_campaigns():
     rows = await query_db("SELECT * FROM campaigns ORDER BY created_at DESC LIMIT 100")
     harvey_sends = _harvey_can_send()
     send_as = "" if harvey_sends else _send_as()
-    footer = _compliance_view()["footer"]
     committed = await _harvey_committed_ids()
     hand_sent = await _hand_sent_ids()
     for row in rows:
@@ -1424,8 +1454,10 @@ async def get_campaigns():
             tuple(ids),
         ) if ids else []
         row["send_as"] = send_as
-        # A cold email sent by hand needs the same footer Harvey adds.
-        row["footer"] = footer
+        # A cold email sent by hand needs the same footer Harvey adds, in
+        # the language the campaign is written in.
+        first = row["sequence"][0] if row["sequence"] and isinstance(row["sequence"][0], dict) else {}
+        row["footer"] = _compliance_view(str(first.get("body") or ""))["footer"]
         for r in row["recipients"]:
             r["sent_by_hand"] = r["id"] in hand_sent
             # "I already emailed them": always recordable before Harvey commits.

@@ -19,6 +19,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from html import unescape
 from urllib.parse import quote, unquote
 
 import httpx
@@ -97,6 +98,8 @@ class Posting:
     location: str = ""
     posted: str = ""     # YYYY-MM-DD when the feed gives one
     url: str = ""
+    remote: bool = False  # the board, or the title/location, says remote
+    text: str = ""        # the description as plain text, when the feed has it
 
     def summary(self) -> str:
         """"Head of Growth · Marketing · New York, NY · posted 2026-10-01"."""
@@ -174,6 +177,26 @@ def _day(value) -> str:
     return text[:10] if re.match(r"\d{4}-\d{2}-\d{2}", text) else ""
 
 
+# The longest description kept per role: enough for its stack and its terms.
+MAX_POSTING_TEXT = 20_000
+_REMOTE_RE = re.compile(r"(?i)\b(?:remote|full[\s-]?remote|t[ée]l[ée]travail|[àa] distance|"
+                        r"work from home|wfh)\b")
+
+
+def _plain(value) -> str:
+    """Plain text from a description that may be HTML, or HTML escaped
+    once more (Greenhouse's "&lt;p&gt;")."""
+    text = value if isinstance(value, str) else ""
+    for _ in range(2):
+        text = unescape(text)
+    text = re.sub(r"(?s)<[^>]+>", " ", text)
+    return re.sub(r"\s+", " ", text).strip()[:MAX_POSTING_TEXT]
+
+
+def _says_remote(*texts: str) -> bool:
+    return any(_REMOTE_RE.search(t or "") for t in texts)
+
+
 def _greenhouse(payload) -> list[Posting]:
     out, seen = [], set()
     departments = payload.get("departments") if isinstance(payload, dict) else None
@@ -191,11 +214,12 @@ def _greenhouse(payload) -> list[Posting]:
                 continue
             seen.add(key)
             loc = job.get("location")
+            place = _s(loc.get("name")) if isinstance(loc, dict) else ""
             out.append(Posting(
-                title=_s(job["title"]), department=name,
-                location=_s(loc.get("name")) if isinstance(loc, dict) else "",
+                title=_s(job["title"]), department=name, location=place,
                 posted=_day(job.get("first_published")) or _day(job.get("updated_at")),
                 url=_s(job.get("absolute_url")),
+                remote=_says_remote(place, job["title"]), text=_plain(job.get("content")),
             ))
     return out
 
@@ -206,12 +230,20 @@ def _lever(payload) -> list[Posting]:
         if not isinstance(job, dict) or not _s(job.get("text")):
             continue
         cats = job.get("categories") if isinstance(job.get("categories"), dict) else {}
+        lists = job.get("lists") if isinstance(job.get("lists"), list) else []
+        text = " ".join([_s(job.get("descriptionPlain"))]
+                        + [f"{_s(item.get('text'))} {_plain(item.get('content'))}"
+                           for item in lists if isinstance(item, dict)]
+                        + [_s(job.get("additionalPlain"))])
+        place = _s(cats.get("location"))
         out.append(Posting(
             title=_s(job["text"]),
             department=_s(cats.get("department")) or _s(cats.get("team")),
-            location=_s(cats.get("location")),
+            location=place,
             posted=_day(job.get("createdAt")),
             url=_s(job.get("hostedUrl")),
+            remote=_s(job.get("workplaceType")).lower() == "remote" or _says_remote(place, job["text"]),
+            text=re.sub(r"\s+", " ", text).strip()[:MAX_POSTING_TEXT],
         ))
     return out
 
@@ -222,10 +254,14 @@ def _ashby(payload) -> list[Posting]:
     for job in jobs if isinstance(jobs, list) else []:
         if not isinstance(job, dict) or not _s(job.get("title")) or job.get("isListed") is False:
             continue
+        place = _s(job.get("location"))
         out.append(Posting(
             title=_s(job["title"]), department=_s(job.get("department")),
-            location=_s(job.get("location")), posted=_day(job.get("publishedAt")),
+            location=place, posted=_day(job.get("publishedAt")),
             url=_s(job.get("jobUrl")),
+            remote=job.get("isRemote") is True or _s(job.get("workplaceType")).lower() == "remote"
+            or _says_remote(place, job["title"]),
+            text=_plain(job.get("descriptionPlain") or job.get("descriptionHtml")),
         ))
     return out
 
@@ -243,6 +279,8 @@ def _workable(payload) -> list[Posting]:
             title=_s(job["title"]), department=_s(job.get("department")), location=place,
             posted=_day(job.get("published_on")) or _day(job.get("created_at")),
             url=_s(job.get("url")) or _s(job.get("shortlink")),
+            remote=bool(job.get("telecommuting")) or _says_remote(place, job["title"]),
+            text=_plain(job.get("description")),
         ))
     return out
 

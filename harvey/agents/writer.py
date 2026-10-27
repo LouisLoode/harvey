@@ -14,17 +14,61 @@ import logging
 import re
 from datetime import datetime, timezone
 
-from harvey.brain import Brain
+from harvey.brain import SKILLS_DIR, Brain
 from harvey.config import HarveyConfig
 from harvey.humanize import humanize, humanizer_enabled
 from harvey.integrations.mail_provider import NATIVE_PROVIDERS
 from harvey.models.campaign import Campaign, EmailStep
-from harvey.state import WRITABLE_EMAIL_STATUSES, StateManager
+from harvey.state import FREE_MAIL_DOMAINS, WRITABLE_EMAIL_STATUSES, StateManager
 from harvey.sending_mode import sync_sending_mode
-from harvey.startups import startup_facts
+from harvey.collectors.discover import clean_industry
+from harvey.language import FRENCH_RULES, company_language
+from harvey.startups import hiring_facts, startup_facts
+from harvey.textio import read_user_text
 from harvey.untrusted import UNTRUSTED_RULE, fence
 
 logger = logging.getLogger("harvey.writer")
+
+# writer.first_email: offer. Overrides rules 11 and 15 of prompts/writer.md
+# for the first email, the way a service is sold: who is writing, and why them.
+OFFER_FIRST_EMAIL = """FIRST EMAIL: OFFER (overrides rules 6, 11 and 15 for the first email).
+Four short sentences at most, in this order:
+1. The trigger: one observable fact from the FACTS that shows you looked
+   ("you've been hiring a CTO since September", "you announced a raise in August").
+2. The problem that fact implies, in the reader's words, not yours. A
+   non-technical founder doesn't think in frameworks; they think "I can't tell
+   whether what my agency bills me is right". Name a technology only when the
+   reader is technical (a CTO or a tech lead).
+3. Half a sentence on who you are, from the product info. Not a CV: no years
+   of experience, no list of clients.
+4. One question that asks for a reply, not a meeting, with an easy way to say
+   no ("worth a quick exchange, or not a topic for you right now?"). Never ask
+   for a call, a visio or an amount of time in this email.
+Pick the angle that fits their situation. When the product info lists offers by
+situation, use the one the FACTS point to. Never offer them something they are
+past: a CTO to a company that has one, a first version to a company that has
+raised a round or has a product on the market.
+It must fit on a phone screen: under 60 words. Never start with yourself."""
+
+# writer.first_email: offer. Follow-ups that each bring something new.
+OFFER_FOLLOW_UPS = (
+    "- Email 2: 4 days later. Something new: a short case or proof point from the product\n"
+    "  info, or a second observation. Never \"just following up\" or a recap of email 1.\n"
+    "  Under 60 words, one question that asks for a reply.\n"
+    "- Email 3: 6 days after that. Under 40 words. An easy way out (\"no worries if it's\n"
+    "  not a topic\"), no guilt, no \"one last time\"."
+)
+
+# writer.critique: the review call's rubric, best first.
+CRITIQUE_RUBRIC = """1. Specific: built on one real fact from the FACTS that matters to them now.
+2. Relevant: what is offered or asked follows from that fact.
+3. Respectful: never implies they are failing or can't do their job.
+4. Clear: a stranger understands in five seconds who writes and why.
+5. Easy to answer: one question they can reply to in one line.
+6. Human: reads like a person typed it; follows every STRICT EMAIL RULE."""
+VARIANTS = 3
+# Emails the operator wrote or likes, in their own words: skills/voice_samples.md.
+VOICE_SKILL = "voice_samples"
 
 # How many times the model may fail to write a usable sequence for a
 # prospect before Harvey stops trying (status 'write_failed'). A provider
@@ -89,8 +133,20 @@ class Writer:
             )
             return
 
-        # Batch prospects into campaign groups (by industry/title for relevance)
-        batches = self._group_prospects(prospects_with_email)
+        # Only so many people per company at a time (contacts_per_company).
+        cap = int(getattr(self.config.channels.email, "contacts_per_company", 0) or 0)
+        if cap:
+            prospects_with_email = await self._within_company_cap(prospects_with_email, cap)
+            if not prospects_with_email:
+                logger.info("Writer: every company with a new prospect already has its contacts in outreach.")
+                return
+
+        # The language each one is written to in: French to French companies.
+        languages = {p.id: await self._language(p) for p in prospects_with_email}
+
+        # Batch prospects into campaign groups (by industry/title for relevance,
+        # and by language: one template goes to the whole batch)
+        batches = self._group_prospects(prospects_with_email, languages)
 
         for batch_name, prospects in batches.items():
             if not prospects:
@@ -102,8 +158,9 @@ class Writer:
             )
 
             # Generate the email sequence
+            language = languages.get(prospects[0].id, "en")
             self._no_reply = False
-            sequence = await self._write_sequence(prospects)
+            sequence = await self._write_sequence(prospects, language)
             if not sequence:
                 paused = getattr(self.brain, "paused_reason", "") or (
                     "no reply from the model" if self._no_reply else "")
@@ -136,7 +193,7 @@ class Writer:
             # Native providers: replace the shared template for email 1 with
             # a per-prospect draft grounded in that company's actual facts.
             if self.is_native:
-                await self._personalize_first_emails(campaign_id, prospects)
+                await self._personalize_first_emails(campaign_id, prospects, language)
 
             await self.state.log_action(
                 action_type="write_campaign",
@@ -185,7 +242,101 @@ class Writer:
                 f"{MAX_WRITE_ATTEMPTS} unusable drafts; marked write_failed."
             )
 
-    async def _personalize_first_emails(self, campaign_id: str, prospects: list):
+    def _writer_setting(self, name: str, default):
+        return getattr(getattr(self.config, "writer", None), name, default)
+
+    def _style_blocks(self) -> str:
+        """The offer rule (writer.first_email: offer) and the operator's own
+        emails (skills/voice_samples.md), when there are any."""
+        blocks = []
+        if self._writer_setting("first_email", "observation") == "offer":
+            blocks.append(OFFER_FIRST_EMAIL)
+        samples = self._voice_samples()
+        if samples:
+            blocks.append(
+                "VOICE SAMPLES: emails the sender wrote or likes. Match their tone, "
+                "rhythm, length and how they open and close. Never reuse their facts, "
+                "names, numbers or claims; the FACTS below are the only facts.\n" + samples)
+        return "".join(f"\n\n{b}" for b in blocks)
+
+    def _voice_samples(self) -> str:
+        """skills/voice_samples.md without its comments; "" when there is no
+        such file or it holds no email yet."""
+        path = SKILLS_DIR / f"{VOICE_SKILL}.md"
+        try:
+            text = read_user_text(path) if path.exists() else ""
+        except OSError:
+            text = ""
+        text = re.sub(r"(?s)<!--.*?-->", "", text).strip()
+        return text if len(text.split()) >= 15 else ""
+
+    async def _pick_best(self, facts: list[str], variants: list[dict]) -> dict:
+        """Ask a separate review call which draft is best against the rubric.
+        Fails open to the first draft."""
+        if len(variants) < 2:
+            return variants[0]
+        drafts = "\n\n".join(f"Draft {i + 1}\nSubject: {v['subject']}\n{v['body']}"
+                              for i, v in enumerate(variants))
+        prompt = f"""You review cold emails before they are sent. Pick the one draft that
+best meets this rubric, in order of importance:
+{CRITIQUE_RUBRIC}
+
+What is known about the recipient (the only facts a draft may use):
+{fence(chr(10).join(facts), "prospect research")}
+
+The drafts:
+{fence(drafts, "drafts")}
+
+{UNTRUSTED_RULE}
+
+Return ONLY JSON: {{"best": <draft number>, "why": "<one sentence>"}}"""
+        try:
+            verdict = await self.brain.think_json(prompt, session_id="harvey-writer",
+                                                  agent="writer", task="critique")
+            best = int(verdict.get("best")) - 1 if isinstance(verdict, dict) else -1
+        except (TypeError, ValueError, AttributeError):
+            best = -1
+        if 0 <= best < len(variants):
+            logger.info(f"Writer: kept draft {best + 1} of {len(variants)}: "
+                        f"{str(verdict.get('why') or '')[:160]}")
+            return variants[best]
+        return variants[0]
+
+    async def _within_company_cap(self, prospects: list, cap: int) -> list:
+        """At most ``cap`` people per company in cold outreach, counting those
+        already queued or written to; the most senior, then best scored,
+        first. The others stay new for later."""
+        def company_of(p):
+            domain = (p.email or "").rpartition("@")[2].lower()
+            return p.company_id or (domain if domain and domain not in FREE_MAIL_DOMAINS else p.id)
+
+        taken: dict[str, int] = {}
+        kept = []
+        for p in sorted(prospects, key=lambda p: (p.seniority != "c_suite", -(p.score or 0))):
+            key = company_of(p)
+            if key not in taken:
+                taken[key] = await self.state.colleagues_in_outreach(p.id) if p.id else 0
+            if taken[key] >= cap:
+                continue
+            taken[key] += 1
+            kept.append(p)
+        return kept
+
+    async def _language(self, prospect) -> str:
+        """"fr" or "en" for this prospect's company (see harvey.language)."""
+        company = None
+        if prospect.company_id:
+            try:
+                company = await self.state.get_company(prospect.company_id)
+            except Exception:
+                company = None
+        domain = (getattr(company, "domain", "") or (prospect.email or "").rpartition("@")[2])
+        return await company_language(self.state, self.config, prospect.company_id or "",
+                                      domain=domain, location=getattr(company, "location", "") or "",
+                                      description=getattr(company, "description", "") or "")
+
+    async def _personalize_first_emails(self, campaign_id: str, prospects: list,
+                                        language: str = "en"):
         """Draft a grounded, per-prospect email 1 and stage it in the outbox.
 
         The outbox unique index means the sender's later template staging
@@ -204,7 +355,7 @@ class Writer:
         pending = []
         for prospect in prospects:
             try:
-                draft = await self._write_personal_email(prospect)
+                draft = await self._write_personal_email(prospect, language)
             except Exception as e:
                 logger.warning(f"Writer: personal draft failed for {prospect.email}: {e}")
                 continue
@@ -270,7 +421,7 @@ class Writer:
             + lines
         )
 
-    async def _write_personal_email(self, prospect) -> dict | None:
+    async def _write_personal_email(self, prospect, language: str = "en") -> dict | None:
         """One grounded draft for one person. Facts in, one email out."""
         inbox_rule = ""
         if prospect.is_company_inbox:
@@ -288,8 +439,9 @@ class Writer:
                 f"- Title: {prospect.title}",
                 f"- Company: {prospect.company}",
             ]
-        if prospect.industry:
-            facts.append(f"- Industry: {prospect.industry}")
+        industry = clean_industry(prospect.industry)
+        if industry:
+            facts.append(f"- Industry: {industry}")
 
         company = None
         if prospect.company_id:
@@ -311,6 +463,7 @@ class Writer:
         startup = await self._startup(prospect.company_id)
         if startup is not None:
             facts.extend(startup)
+        facts.extend(await hiring_facts(getattr(self, "state", None), prospect.company_id))
 
         prompt = self.brain.load_prompt(
             "writer",
@@ -329,6 +482,18 @@ class Writer:
             prompt += self._startup_playbook()
         prompt += await self._feedback_block([prospect.id])
 
+        lang_rule = f"\n{FRENCH_RULES}\n" if language == "fr" else ""
+        offer = self._writer_setting("first_email", "observation") == "offer"
+        first_rule = ("Under 60 words, four sentences at most: the trigger, their problem in their\n"
+                      "  words, half a sentence on you, one question asking for a reply (FIRST EMAIL: OFFER)."
+                      if offer else
+                      "Under 75 words. One specific observation from the FACTS above, one\n"
+                      "  question. No pitch, no product name.")
+        variants = VARIANTS if self._writer_setting("critique", False) else 1
+        returns = ('{"subject": "...", "body": "..."}' if variants == 1 else
+                   '{"variants": [{"subject": "...", "body": "..."}, ...]} with '
+                   f'{variants} drafts, each a genuinely different angle on the FACTS')
+        prompt += self._style_blocks()
         prompt += f"""
 
 Write ONE cold email (the very first touch) to this specific person.
@@ -342,28 +507,32 @@ funding rounds, mutual contacts, metrics, or anything else:
 {UNTRUSTED_RULE}
 
 Requirements:
-- Under 75 words. One specific observation from the FACTS above, one
-  question. No pitch, no product name.
+- {first_rule}
 - Write the actual text (no merge variables — you know their name/company).
 - Subject: lowercase, 2-5 words.
 - No postal address, unsubscribe or opt-out line: Harvey adds them when it sends.
 - Follow every STRICT EMAIL RULE above.{inbox_rule}
-
-Return ONLY JSON: {{"subject": "...", "body": "..."}}"""
+{lang_rule}
+Return ONLY JSON: {returns}"""
 
         result = await self.brain.think_json(
             prompt, session_id="harvey-writer",
             agent="writer", task="personal_email",
         )
-        if not isinstance(result, dict):
+        drafts = []
+        for raw in (result.get("variants") if isinstance(result, dict) and isinstance(
+                result.get("variants"), list) else [result]):
+            if not isinstance(raw, dict):
+                continue
+            subject = str(raw.get("subject") or "").strip()
+            body = str(raw.get("body") or "").strip()
+            if subject and body:
+                drafts.append({"subject": subject[:120], "body": body[:2000]})
+        if not drafts:
             return None
-        subject = str(result.get("subject") or "").strip()
-        body = str(result.get("body") or "").strip()
-        if not subject or not body:
-            return None
-        return {"subject": subject[:120], "body": body[:2000]}
+        return await self._pick_best(facts, drafts[:VARIANTS])
 
-    async def _write_sequence(self, prospects: list) -> list[EmailStep]:
+    async def _write_sequence(self, prospects: list, language: str = "en") -> list[EmailStep]:
         """Ask the brain to write a 3-email sequence."""
         # Build context about the prospects
         prospect_summary = "\n".join(
@@ -417,6 +586,16 @@ Pricing: {self.config.product.pricing}"""
         # Campaign notes only: this template goes to the whole batch, so a
         # note about one person ("met her at the expo") must never reach it.
         prompt += await self._feedback_block([])
+        prompt += self._style_blocks()
+        offer = self._writer_setting("first_email", "observation") == "offer"
+        email1_rule = ("Email 1: the trigger, their problem in their words, half a sentence on you, "
+                       "one question asking for a reply (FIRST EMAIL: OFFER). Under 60 words."
+                       if offer else
+                       "Email 1: Personalized cold observation + one question. Under 75 words. No pitch.")
+        follow_ups = OFFER_FOLLOW_UPS if offer else (
+            "- Email 2: Follow-up 3 days later. Different angle, one concrete proof point. Under 75 words.\n"
+            "- Email 3: Break-up email 4 days after that. Under 40 words. Gracious, not guilt-tripping.")
+        delays = (4, 6) if offer else (3, 4)
 
         prompt += f"""
 
@@ -426,20 +605,19 @@ Write a 3-email cold outreach sequence for prospects like these:
 {UNTRUSTED_RULE}
 
 Requirements:
-- Email 1: Personalized cold observation + one question. Under 75 words. No pitch.
-- Email 2: Follow-up 3 days later. Different angle, one concrete proof point. Under 75 words.
-- Email 3: Break-up email 4 days after that. Under 40 words. Gracious, not guilt-tripping.
+- {email1_rule}
+{follow_ups}
 {merge_rule}
 - Never be pushy or salesy. Be consultative and value-driven.
 - Subject lines: lowercase, 2-5 words.
 - No postal address, unsubscribe or opt-out line: Harvey adds them when it sends.
 - Follow every rule in the STRICT EMAIL RULES above. No exceptions.
-
+{FRENCH_RULES + chr(10) if language == "fr" else ""}
 Return ONLY a JSON array (no markdown fences, no commentary):
 [
   {{"step": 1, "subject": "...", "body": "...", "delay_days": 0}},
-  {{"step": 2, "subject": "...", "body": "...", "delay_days": 3}},
-  {{"step": 3, "subject": "...", "body": "...", "delay_days": 4}}
+  {{"step": 2, "subject": "...", "body": "...", "delay_days": {delays[0]}}},
+  {{"step": 3, "subject": "...", "body": "...", "delay_days": {delays[1]}}}
 ]"""
 
         result = await self.brain.think_json(
@@ -514,17 +692,21 @@ Return ONLY a JSON array (no markdown fences, no commentary):
             logger.warning(f"Writer: Expected 3 emails, got {len(steps)}.")
         return steps
 
-    def _group_prospects(self, prospects: list) -> dict[str, list]:
-        """Group prospects into campaign batches by industry/title combo."""
+    def _group_prospects(self, prospects: list, languages: dict | None = None) -> dict[str, list]:
+        """Group prospects into campaign batches by industry/title combo, and
+        by the language they're written to in (``languages``: prospect id ->
+        "fr" | "en"; English batches keep their names)."""
         batches: dict[str, list] = {}
 
         for prospect in prospects:
             # Group by industry + rough title category
-            industry = prospect.industry or "general"
+            industry = clean_industry(prospect.industry) or "general"
             # Inbox prospects get their own campaign: their templates can't
             # greet anyone by name.
             kind = "inbox-outreach" if prospect.is_company_inbox else "outreach"
             key = f"{industry}-{kind}"
+            if (languages or {}).get(prospect.id) == "fr":
+                key += "-fr"
 
             if key not in batches:
                 batches[key] = []
