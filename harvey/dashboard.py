@@ -519,14 +519,15 @@ async def test_instantly(request: Request):
 
 
 @app.get("/api/companies")
-async def get_companies():
-    """All companies with contact counts."""
-    rows = await query_db("""
-        SELECT c.*,
-            (SELECT COUNT(*) FROM prospects p WHERE p.company_id = c.id) as contact_count
-        FROM companies c ORDER BY c.created_at DESC LIMIT 200
-    """)
-    return rows
+async def get_companies(sort: str = "added", dir: str = "desc", offset: int = 0, limit: int = 50):
+    """One page of companies with their contact counts, sorted in the
+    database: the page never loads the whole list."""
+    try:
+        state = _state()
+        await state.init_db()
+        return await state.companies_page(sort=sort, direction=dir, offset=offset, limit=limit)
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @app.get("/api/companies/{company_id}/contacts")

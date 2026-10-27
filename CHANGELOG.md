@@ -9,6 +9,13 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **Companies: sort by column, and pages, done by the database.** Click a
+  column (company, industry, location, size, contacts, source, added) to
+  sort it; size sorts by its first number, and missing values sort last
+  either way. `/api/companies` now sorts and pages in SQL (50 at a time,
+  with the total) and counts each company's contacts in one join instead of
+  a query per row.
+
 - **Contacts: sort, filter by email, and pages, done by the database.**
   Click a column (name, company, email, score, status, added) to sort it;
   filter by email (verified, catch-all, unverified, invalid) on top of the
