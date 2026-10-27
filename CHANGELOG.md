@@ -345,6 +345,10 @@ minor versions can still change behaviour.
 
 ### Fixed
 
+- **`harvey warmup` missed DKIM on OVHcloud mailboxes.** OVHcloud publishes
+  its keys at `ovhmo-selector-1` and `ovhmo-selector-2`, which weren't among
+  the selectors tried, so a signed domain showed "No key at any common
+  selector". Both are tried now; `dkim_selector` is no longer needed there.
 - **Company names kept a page's wrapping.** A name could arrive as
   "[Communiqué de Presse] Acme", "Press release: Acme" or "Acme, the data
   API for verified records" (a tagline after a comma), and reach emails

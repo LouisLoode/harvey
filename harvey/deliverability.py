@@ -21,6 +21,7 @@ OK, WARN, FAIL, INFO = "ok", "warn", "fail", "info"
 COMMON_DKIM_SELECTORS = (
     "google", "default", "selector1", "selector2", "k1", "k2", "s1", "s2",
     "mail", "dkim", "fm1", "fm2", "fm3", "zoho", "zmail", "mxvault",
+    "ovhmo-selector-1", "ovhmo-selector-2",
     "protonmail", "protonmail2", "mandrill", "smtp", "sig1", "everlytickey1",
 )
 
