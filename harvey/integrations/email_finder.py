@@ -740,6 +740,25 @@ def _belongs_to_someone_else(candidate, pattern, person, domain, other_people, k
     return False
 
 
+async def _second_format(first_name, last_name, domain, pattern, rejected, mx_type, env,
+                         other_people, known_emails) -> Optional[tuple[str, str]]:
+    """(email, pattern) in the other common format when the verifier rejected
+    ``rejected``, or None. first.last@ and first@ are the two formats most
+    addresses use, so each is the other's second look: one more verification
+    at most, and only a confirmed mailbox counts."""
+    second = SMALL_BUSINESS_PATTERN if pattern == DEFAULT_PATTERN else DEFAULT_PATTERN
+    email = build_email(second, first_name, last_name, domain)
+    if not email or email == rejected or _belongs_to_someone_else(
+            email, second, (first_name, last_name), domain, other_people, known_emails):
+        return None
+    status, _ = await _verify_candidate(email, mx_type, env)
+    if status != "verified":
+        return None
+    logger.info(f"Email for {first_name} {last_name}@{domain}: {rejected} was rejected, "
+                f"{email} verified")
+    return email, second
+
+
 # ── Top-level entry point ──
 
 async def find_email(
@@ -783,11 +802,13 @@ async def find_email(
     )
     candidate = build_email(pattern, first_name, last_name, domain)
     own = _clean_name_part(first_name), _clean_name_part(last_name)
+    published = False
     for email, first, last in known_emails or []:
         if (_clean_name_part(first), _clean_name_part(last)) == own \
                 and email.split("@")[-1].lower() == domain:
             candidate = email.strip().lower()
             pattern = infer_pattern_from_email(candidate, first, last) or pattern
+            published = True
             break
     if _belongs_to_someone_else(candidate, pattern, (first_name, last_name), domain,
                                 other_people, known_emails):
@@ -811,6 +832,15 @@ async def find_email(
         return EmailResult(email=candidate, status="guess", pattern=pattern, mx_type=mx_type)
 
     status, catch_all = await _verify_candidate(candidate, mx_type, env)
+
+    # A rejected guess gets one other format before the person is given up
+    # on. A rejected published address doesn't: that mailbox is gone.
+    if status == "invalid" and not published:
+        second = await _second_format(first_name, last_name, domain, pattern, candidate,
+                                      mx_type, env, other_people, known_emails)
+        if second:
+            candidate, pattern = second
+            status = "verified"
 
     if catch_all and state is not None:
         try:

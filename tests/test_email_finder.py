@@ -208,6 +208,66 @@ async def test_find_email_invalid_from_provider(state, monkeypatch):
     assert result.status == "invalid"
 
 
+def _reoon_knows(monkeypatch, *mailboxes):
+    """Reoon answers valid for ``mailboxes`` and invalid for anything else;
+    returns the list of addresses it was asked about."""
+    asked = []
+
+    async def google_mx(domain):
+        return "aspmx.l.google.com"
+
+    async def fake_reoon(email, key):
+        asked.append(email)
+        return {"status": "valid" if email in mailboxes else "invalid", "catch_all": False}
+    monkeypatch.setattr(ef, "get_mx_host", google_mx)
+    monkeypatch.setattr(ef, "_hunter_api_key", lambda: "")
+    monkeypatch.setattr(ef, "verify_reoon", fake_reoon)
+    return asked
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_format_gets_the_other_one(state, monkeypatch):
+    asked = _reoon_knows(monkeypatch, "jane@acme.com")
+    result = await find_email("Jane", "Doe", "acme.com", env=Env(reoon="k"), state=state)
+    assert (result.email, result.status, result.pattern) == ("jane@acme.com", "verified", "{f}")
+    assert asked == ["jane.doe@acme.com", "jane@acme.com"]
+
+
+@pytest.mark.asyncio
+async def test_first_at_rejected_tries_first_dot_last(state, monkeypatch):
+    asked = _reoon_knows(monkeypatch, "jane.doe@acme.com")
+    result = await find_email("Jane", "Doe", "acme.com", env=Env(reoon="k"), state=state,
+                              default_pattern="{f}")
+    assert (result.email, result.status) == ("jane.doe@acme.com", "verified")
+    assert asked == ["jane@acme.com", "jane.doe@acme.com"]
+
+
+@pytest.mark.asyncio
+async def test_only_one_second_look(state, monkeypatch):
+    asked = _reoon_knows(monkeypatch)
+    result = await find_email("Jane", "Doe", "acme.com", env=Env(reoon="k"), state=state)
+    assert (result.email, result.status) == ("jane.doe@acme.com", "invalid")
+    assert len(asked) == 2
+
+
+@pytest.mark.asyncio
+async def test_no_second_look_for_a_rejected_published_address(state, monkeypatch):
+    # Her own published address bounced: that mailbox is gone.
+    asked = _reoon_knows(monkeypatch, "jane@acme.com")
+    result = await find_email("Jane", "Doe", "acme.com", env=Env(reoon="k"), state=state,
+                              known_emails=[("j.doe@acme.com", "Jane", "Doe")])
+    assert result.status == "invalid" and asked == ["j.doe@acme.com"]
+
+
+@pytest.mark.asyncio
+async def test_no_second_look_at_someone_else_s_mailbox(state, monkeypatch):
+    # jane@ could be the other Jane's mailbox: never verified for this one.
+    asked = _reoon_knows(monkeypatch, "jane@acme.com")
+    result = await find_email("Jane", "Doe", "acme.com", env=Env(reoon="k"), state=state,
+                              other_people=[("Jane", "Roe")])
+    assert result.status == "invalid" and asked == ["jane.doe@acme.com"]
+
+
 @pytest.mark.asyncio
 async def test_find_email_inconclusive_is_guess_not_verified(state, monkeypatch):
     """The core bug fix: no verifier confirmation → 'guess', never 'verified'."""

@@ -263,6 +263,12 @@ minor versions can still change behaviour.
 
 ### Changed
 
+- **A rejected email guess gets the other common format.** When the
+  verifier rejects `first.last@`, Harvey verifies `first@` once (and the
+  reverse) before giving the person up as invalid; only a confirmed mailbox
+  replaces the guess. A rejected published address, or a format another
+  named person at the company could own, gets no second look. At most one
+  extra verification per rejected address.
 - **The offer-style first email asks for a reply, not a meeting.** Four
   short sentences at most: the trigger, the problem it implies in the
   reader's words (no stack talk to a non-technical reader), half a sentence
