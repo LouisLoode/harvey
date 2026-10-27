@@ -1996,21 +1996,47 @@ async function sendingToggle(action) {
   loadOutbox();
 }
 
+// Sort and page live outside the table, so the 15-second refresh re-fetches
+// the same page. The server sorts and pages (/api/companies).
+let _companySort = {key: 'added', dir: 'desc'};
+let _companyOffset = 0, _companyPage = null, _companySeq = 0, _companySig = '';
+const COMPANY_PAGE_SIZE = 50;
+const COMPANY_SORT_FIRST = {contacts: 'desc', added: 'desc', size: 'desc'};   // the rest start A→Z
+
 async function loadCompanies() {
   companyDrill = false;
   const el = document.getElementById('companies-list');
-  const data = await api('/api/companies');
-  if (!data) { el.innerHTML = offlineState(); return; }
-  _companies = data;
-  if (!data.length) {
+  const seq = ++_companySeq;
+  const params = new URLSearchParams({
+    sort: _companySort.key, dir: _companySort.dir, offset: _companyOffset, limit: COMPANY_PAGE_SIZE,
+  });
+  const data = await api('/api/companies?' + params);
+  if (seq !== _companySeq || companyDrill) return;   // a newer request won, or a company was opened
+  if (!data || data.error) { el.innerHTML = offlineState(); return; }
+  if (!data.total) {
+    _companies = [];
     el.innerHTML = emptyState(icon('companies'), 'No companies yet',
       'Confirm your <b>Signals</b>, then find businesses on the <b>Discover</b> tab. ' +
       'OpenStreetMap is free and needs no account.');
     return;
   }
-  let html = '<div class="table-card"><table class="nowrap"><thead><tr><th>Company</th><th>Industry</th>' +
-    '<th>Location</th><th>Size</th><th class="num">Contacts</th><th>Source</th><th>Added</th></tr></thead><tbody>';
-  data.forEach((c, i) => {
+  // A page past the end (companies removed meanwhile): go to the last one.
+  if (!data.items.length && _companyOffset) {
+    _companyOffset = Math.max(0, Math.floor((data.total - 1) / COMPANY_PAGE_SIZE) * COMPANY_PAGE_SIZE);
+    return loadCompanies();
+  }
+  // The 15-second refresh re-renders only when something changed.
+  const sig = JSON.stringify(data);
+  if (sig === _companySig && el.querySelector('table')) return;
+  _companySig = sig;
+  _companies = data.items;
+  _companyPage = data;
+  const sort = (key, label, cls) => sortHeader(key, label, _companySort, 'sortCompaniesBy', cls);
+  let html = '<div class="table-card"><table class="nowrap"><thead><tr>' +
+    sort('name', 'Company') + sort('industry', 'Industry') + sort('location', 'Location') +
+    sort('size', 'Size') + sort('contacts', 'Contacts', 'num') + sort('source', 'Source') +
+    sort('added', 'Added') + '</tr></thead><tbody>';
+  _companies.forEach((c, i) => {
     const website = c.website || (c.domain ? 'https://' + c.domain : '');
     const domain = safeHref(website)
       ? '<a href="' + safeHref(website) + '" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">' +
@@ -2026,8 +2052,24 @@ async function loadCompanies() {
       '<td class="muted">' + sourceLabel(c.source) + '</td>' +
       '<td class="muted">' + relTime(c.created_at) + '</td></tr>';
   });
+  const first = data.offset + 1, last = data.offset + _companies.length;
   el.innerHTML = html + '</tbody></table></div>' +
-    '<div class="table-foot">' + data.length + ' compan' + (data.length === 1 ? 'y' : 'ies') + '</div>';
+    '<div class="table-foot">' + first + '–' + last + ' of ' + data.total +
+      ' compan' + (data.total === 1 ? 'y' : 'ies') + pagerHtml(data, COMPANY_PAGE_SIZE, 'companyPage') + '</div>';
+}
+
+function sortCompaniesBy(key) {
+  _companySort = _companySort.key === key
+    ? {key, dir: _companySort.dir === 'asc' ? 'desc' : 'asc'}
+    : {key, dir: COMPANY_SORT_FIRST[key] || 'asc'};
+  _companyOffset = 0;
+  loadCompanies();
+}
+
+function companyPage(step) {
+  const total = (_companyPage && _companyPage.total) || 0;
+  _companyOffset = Math.min(Math.max(0, _companyOffset + step * COMPANY_PAGE_SIZE), Math.max(0, total - 1));
+  loadCompanies();
 }
 
 async function showCompanyContacts(index) {
@@ -2036,6 +2078,7 @@ async function showCompanyContacts(index) {
   companyDrill = true;
   const el = document.getElementById('companies-list');
   const data = await api('/api/companies/' + encodeURIComponent(company.id) + '/contacts');
+  _companySig = '';   // coming back re-renders the list it replaces
   let html = '<button class="btn btn-ghost btn-sm" onclick="loadCompanies()" style="margin-bottom:12px">' +
     '&larr; All companies</button>' +
     '<div class="card flush"><div class="card-head"><h3>' + escHtml(company.name) + '</h3>' +
@@ -2174,14 +2217,27 @@ function contactPage(step) {
   loadProspects();
 }
 
-function sortHeader(key, label) {
-  const on = _contactSort.key === key;
-  const dir = on ? _contactSort.dir : '';
-  return '<th aria-sort="' + (on ? (dir === 'asc' ? 'ascending' : 'descending') : 'none') + '">' +
-    '<button class="th-sort' + (on ? ' on' : '') + '" onclick="sortContactsBy(\'' + key + '\')" ' +
+// A sortable column header. ``sort`` is {key, dir}; ``handler`` the name of
+// the function a click calls with the column's key.
+function sortHeader(key, label, sort, handler, cls) {
+  const on = sort.key === key;
+  const dir = on ? sort.dir : '';
+  return '<th' + (cls ? ' class="' + cls + '"' : '') +
+    ' aria-sort="' + (on ? (dir === 'asc' ? 'ascending' : 'descending') : 'none') + '">' +
+    '<button class="th-sort' + (on ? ' on' : '') + '" onclick="' + handler + '(\'' + key + '\')" ' +
     'title="Sort by ' + label.toLowerCase() + '">' + label +
     '<span class="sort-ind" aria-hidden="true">' + (on ? (dir === 'asc' ? '▲' : '▼') : '↕') + '</span>' +
     '</button></th>';
+}
+
+// Previous / Next under a paged table, when there is more than one page.
+function pagerHtml(page, size, handler) {
+  if (page.total <= size) return '';
+  const last = page.offset + page.items.length;
+  return ' <span class="pager">' +
+    '<button class="btn btn-ghost btn-sm" onclick="' + handler + '(-1)"' + (page.offset ? '' : ' disabled') + '>Previous</button>' +
+    '<button class="btn btn-ghost btn-sm" onclick="' + handler + '(1)"' + (last < page.total ? '' : ' disabled') + '>Next</button>' +
+    '</span>';
 }
 
 function filterButtons(list, current, counts, setter) {
@@ -2208,10 +2264,11 @@ function renderContacts() {
       'Nothing matches that search and filter.') + '</div>';
     return;
   }
+  const sort = (key, label) => sortHeader(key, label, _contactSort, 'sortContactsBy');
   let html = '<div class="table-card"><table class="nowrap"><thead><tr>' +
-    sortHeader('name', 'Name') + sortHeader('company', 'Company') + sortHeader('email', 'Email') +
-    sortHeader('score', 'Score') + sortHeader('status', 'Status') + '<th>Source</th>' +
-    sortHeader('added', 'Added') + '<th></th></tr></thead><tbody>';
+    sort('name', 'Name') + sort('company', 'Company') + sort('email', 'Email') +
+    sort('score', 'Score') + sort('status', 'Status') + '<th>Source</th>' +
+    sort('added', 'Added') + '<th></th></tr></thead><tbody>';
   for (const [p, i] of rows) {
     html += '<tr><td><div class="cell-row"><span class="avatar">' + initials(p.first_name, p.last_name) + '</span>' +
         '<div class="cell-stack"><span class="cell-main">' + escHtml(p.first_name) + ' ' + escHtml(p.last_name) + '</span>' +
@@ -2235,12 +2292,7 @@ function renderContacts() {
     if (_optOut.id === p.id) html += '<tr class="detail-row"><td colspan="8">' + optOutPanel(p) + '</td></tr>';
   }
   const first = page.offset + 1, last = page.offset + rows.length;
-  const pager = page.total > CONTACT_PAGE_SIZE
-    ? ' <span class="pager">' +
-        '<button class="btn btn-ghost btn-sm" onclick="contactPage(-1)"' + (page.offset ? '' : ' disabled') + '>Previous</button>' +
-        '<button class="btn btn-ghost btn-sm" onclick="contactPage(1)"' + (last < page.total ? '' : ' disabled') + '>Next</button>' +
-      '</span>'
-    : '';
+  const pager = pagerHtml(page, CONTACT_PAGE_SIZE, 'contactPage');
   rowsEl.innerHTML = html + '</tbody></table></div>' +
     '<div class="table-foot">' + first + '–' + last + ' of ' + page.total +
       (page.total !== page.everyone ? ' (' + page.everyone + ' contacts in all)' : ' contacts') + pager + '</div>';

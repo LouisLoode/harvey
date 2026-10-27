@@ -525,6 +525,10 @@ MIGRATIONS: list[str] = [
     CREATE INDEX IF NOT EXISTS idx_prospects_created ON prospects(created_at);
     CREATE INDEX IF NOT EXISTS idx_prospects_score ON prospects(score, created_at);
     """,
+    # ── v16: the Companies tab sorts and pages in SQL ──
+    """
+    CREATE INDEX IF NOT EXISTS idx_companies_created ON companies(created_at);
+    """,
 ]
 
 # The Contacts tab: filter groups, email statuses and sort columns, all
@@ -551,6 +555,19 @@ CONTACT_SORTS = {
     "status": ("(CASE status WHEN 'new' THEN 1 WHEN 'queued' THEN 2 WHEN 'contacted' THEN 3 "
                "WHEN 'replied' THEN 4 WHEN 'interested' THEN 5 WHEN 'meeting' THEN 6 ELSE 7 END)", False),
     "added": ("created_at", False),
+}
+
+
+# The Companies tab's sort columns: column -> (SQL, is text). Size is free
+# text ("11-50 employees"), sorted by its first number.
+COMPANY_SORTS = {
+    "name": ("fold(c.name)", True),
+    "industry": ("fold(c.industry)", True),
+    "location": ("fold(c.location)", True),
+    "size": ("(CASE WHEN TRIM(c.company_size) = '' THEN NULL ELSE CAST(TRIM(c.company_size) AS INTEGER) END)", False),
+    "contacts": ("contact_count", False),
+    "source": ("fold(c.source)", True),
+    "added": ("c.created_at", False),
 }
 
 
@@ -1567,6 +1584,39 @@ class StateManager:
         return {"items": rows, "total": total, "everyone": everyone, "offset": offset,
                 "limit": limit, "sort": sort, "dir": direction.lower(),
                 "counts": {"status": status_counts, "email": email_counts}}
+
+    async def companies_page(self, sort: str = "added", direction: str = "desc",
+                             offset: int = 0, limit: int = 50) -> dict:
+        """One page of the Companies tab, sorted in SQL, with each company's
+        number of contacts. Missing values sort last either way; ties stay
+        newest first."""
+        sort = sort if sort in COMPANY_SORTS else "added"
+        direction = "ASC" if direction == "asc" else "DESC"
+        limit = max(1, min(int(limit), 200))
+        offset = max(0, int(offset))
+        expr, is_text = COMPANY_SORTS[sort]
+        missing = f"({expr} IS NULL OR {expr} = '')" if is_text else f"({expr} IS NULL)"
+        order = f"{missing} ASC, {expr} {direction}"
+        if sort == "size":
+            order += ", fold(c.company_size) ASC"
+        order += ", c.created_at DESC, c.id"
+        async with self._connect() as db:
+            await db.create_function("fold", 1, _fold, deterministic=True)
+            db.row_factory = aiosqlite.Row
+            async with db.execute("SELECT COUNT(*) FROM companies") as cursor:
+                total = (await cursor.fetchone())[0]
+            async with db.execute(
+                f"""SELECT c.*, COALESCE(pc.n, 0) AS contact_count
+                    FROM companies c
+                    LEFT JOIN (SELECT company_id, COUNT(*) AS n FROM prospects
+                               WHERE company_id != '' GROUP BY company_id) pc
+                      ON pc.company_id = c.id
+                    ORDER BY {order} LIMIT ? OFFSET ?""",
+                (limit, offset),
+            ) as cursor:
+                rows = [dict(r) for r in await cursor.fetchall()]
+        return {"items": rows, "total": total, "offset": offset, "limit": limit,
+                "sort": sort, "dir": direction.lower()}
 
     async def colleagues_in_outreach(self, prospect_id: str) -> int:
         """How many people at this prospect's company Harvey has already
