@@ -104,6 +104,15 @@ def _company_answered(p: str) -> str:
             f"WHERE s.key = '{COMPANY_STOP_KEY}' || c.id AND {_colleagues(p, 'c')})")
 
 
+def _company_ruled_out(p: str) -> str:
+    """SQL: the latest ICP_EXCLUDED reading of prospect ``p``'s company rules
+    it out (a reading with no value counts as ruled out, as in
+    companies_needing_prospects)."""
+    return ("COALESCE((SELECT COALESCE(o.value_num, 1) FROM observations o "
+            f"WHERE o.company_id = {p}.company_id AND o.signal_code = 'ICP_EXCLUDED' "
+            "ORDER BY o.observed_at DESC, o.rowid DESC LIMIT 1), 0) != 0")
+
+
 def _colleagues_in_outreach(p: str) -> str:
     """SQL: how many people at prospect ``p``'s company Harvey has already
     queued or written to (any status past 'new', bar a failed write)."""
@@ -1651,6 +1660,21 @@ class StateManager:
                 row = await cursor.fetchone()
         return row[0] if row else None
 
+    async def company_ruled_out(self, company_id: str) -> str:
+        """Why the ICP rules this company out (its latest ICP_EXCLUDED
+        reading), or "" when it doesn't or nothing has checked yet."""
+        async with self._connect() as db:
+            async with db.execute(
+                """SELECT value_num, value_text FROM observations
+                   WHERE company_id = ? AND signal_code = 'ICP_EXCLUDED'
+                   ORDER BY observed_at DESC, rowid DESC LIMIT 1""",
+                (company_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+        if not row or row[0] == 0:
+            return ""
+        return row[1] or "ruled out by the ICP"
+
     async def count_outbox_sent(self) -> int:
         async with self._connect() as db:
             async with db.execute(
@@ -2163,6 +2187,16 @@ class StateManager:
             )
             await db.commit()
 
+    async def describe_company(self, company_id: str, description: str):
+        """Set a company's description, unless it already has one."""
+        async with self._connect() as db:
+            await db.execute(
+                """UPDATE companies SET description = ?, updated_at = CURRENT_TIMESTAMP
+                   WHERE id = ? AND COALESCE(description, '') = ''""",
+                (description, company_id),
+            )
+            await db.commit()
+
     async def companies_needing_prospects(
         self, limit: int = 10, stale_days: int = 14
     ) -> list[dict]:
@@ -2382,8 +2416,9 @@ class StateManager:
         return False
 
     async def count_writable_prospects(self, contacts_per_company: int = 0) -> int:
-        """New prospects the Writer can draft for (a deliverable email, and
-        with ``contacts_per_company``, a company with room for one more)."""
+        """New prospects the Writer can draft for (a deliverable email, at a
+        company that hasn't replied and the ICP doesn't rule out, and with
+        ``contacts_per_company``, a company with room for one more)."""
         marks = ",".join("?" for _ in WRITABLE_EMAIL_STATUSES)
         params = list(WRITABLE_EMAIL_STATUSES)
         room = ""
@@ -2394,7 +2429,8 @@ class StateManager:
             async with db.execute(
                 f"""SELECT COUNT(*) FROM prospects p
                     WHERE status = 'new' AND email != ''
-                      AND email_status IN ({marks}) AND NOT {_company_answered('p')} {room}""",
+                      AND email_status IN ({marks}) AND NOT {_company_answered('p')}
+                      AND NOT {_company_ruled_out('p')} {room}""",
                 params,
             ) as cursor:
                 return (await cursor.fetchone())[0]

@@ -50,6 +50,9 @@ icp:
   # French activity-code (NAF) prefixes to rule out, read from the company
   # registry: "78." staffing, "64.30" investment funds.
   # exclude_naf: ["78.", "64.30"]
+  # Whole kinds of site to rule out, by how their homepage describes
+  # itself: job_boards, recruiters, media. Never contacted or written to.
+  # exclude_kinds: [job_boards, recruiters, media]
   # The technologies you work in: companies whose job posts or site mention
   # them get the STACK_MATCH signal.
   # stack_keywords: ["React", "Kafka"]

@@ -38,9 +38,12 @@ from bs4 import BeautifulSoup
 
 from harvey.brain import Brain
 from harvey.collectors import people as people_mod
-from harvey.collectors.discover import site_name_from_html
-from harvey.collectors.profile import _reads_like_title, looks_like_challenge
+from harvey.collectors.discover import is_junk, site_name_from_html
+from harvey.collectors.profile import (
+    _meta_description, _page_title, _reads_like_title, looks_like_challenge,
+)
 from harvey.config import HarveyConfig, EnvConfig
+from harvey.icp_filter import has_exclusions, site_excluded
 from harvey.integrations.email_finder import (
     DEFAULT_PATTERN, SMALL_BUSINESS_PATTERN, find_email, site_email_evidence,
     verify_published_address,
@@ -1609,6 +1612,8 @@ Respond ONLY with the JSON array."""
         ``known_people`` are people already on record for the company (its
         legal directors, from the registry): merged with the team page, so
         they are ranked, ICP-matched and resolved the same way."""
+        if await self._ruled_out(company_id, domain):
+            return []
         try:
             team_members = await self._scrape_team_page(domain)
         except Exception as e:
@@ -1681,6 +1686,38 @@ Respond ONLY with the JSON array."""
             if inbox:
                 contacts.append(inbox)
         return contacts
+
+    async def _ruled_out(self, company_id: str, domain: str) -> str:
+        """Why the ICP rules this company out (icp.exclude_*), or "".
+
+        The profile stage records it, but a company this cycle's search just
+        found, or one not profiled yet, has no reading. Its homepage, read
+        for the team page anyway, is checked here before anyone is looked
+        up, and a company it rules out is recorded as ICP_EXCLUDED."""
+        icp = getattr(getattr(self, "config", None), "icp", None)
+        if not has_exclusions(icp):
+            return ""
+        if company_id:
+            reason = await self.state.company_ruled_out(company_id)
+            if reason:
+                return reason
+        try:
+            site = await self._read_site(domain)
+        except Exception as e:
+            logger.debug(f"Homepage read failed for {domain}: {e}")
+            return ""
+        if not site["pages"]:
+            return ""
+        url, home = site["pages"][0]
+        reason = site_excluded(icp, site_name_from_html(home, domain),
+                               _page_title(home), _meta_description(home))
+        if reason:
+            logger.info(f"Scout: skipping {domain}: {reason}")
+            if company_id:
+                await self.state.add_observation(
+                    "ICP_EXCLUDED", company_id=company_id, collector="scout",
+                    value_num=1, value_text=reason, evidence_url=url)
+        return reason
 
     async def _registry_directors(self, company_id: str) -> list[dict]:
         """The company's legal directors from its latest registry reading
@@ -2132,7 +2169,11 @@ Respond ONLY with the JSON array."""
         }
         if domain in noise:
             return True
-        return any(domain == n or domain.endswith(f".{n}") for n in noise)
+        if any(domain == n or domain.endswith(f".{n}") for n in noise):
+            return True
+        # Discovery's patterns too: its job boards, media and directories
+        # (French ones included) are the same noise when the Scout searches.
+        return is_junk(domain)
 
     def _domain_to_name(self, domain: str) -> str:
         """Convert a domain to a rough company name."""

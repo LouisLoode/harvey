@@ -22,6 +22,7 @@ from harvey.models.campaign import Campaign, EmailStep
 from harvey.state import FREE_MAIL_DOMAINS, WRITABLE_EMAIL_STATUSES, StateManager
 from harvey.sending_mode import sync_sending_mode
 from harvey.collectors.discover import clean_industry
+from harvey.icp_filter import KIND_LABELS, site_kind
 from harvey.language import FRENCH_RULES, company_language
 from harvey.startups import hiring_facts, startup_facts
 from harvey.textio import read_user_text
@@ -127,6 +128,12 @@ class Writer:
             p for p in prospects_with_email
             if not await self.state.colleague_who_replied(p.id)
         ]
+        # The ICP rules their company out (a job board, a recruiter, a word
+        # in exclude_keywords), found after they were: nothing to write.
+        prospects_with_email = [
+            p for p in prospects_with_email
+            if not (p.company_id and await self.state.company_ruled_out(p.company_id))
+        ]
         if not prospects_with_email:
             logger.info(
                 "Writer: No prospects with deliverable (verified/risky) emails yet."
@@ -144,9 +151,13 @@ class Writer:
         # The language each one is written to in: French to French companies.
         languages = {p.id: await self._language(p) for p in prospects_with_email}
 
+        # What kind of company each one is, by its own site: a recruiter or a
+        # media site isn't offered what a startup is, so it gets its own batch.
+        kinds = {p.id: (await self._site_kind(p))[0] for p in prospects_with_email}
+
         # Batch prospects into campaign groups (by industry/title for relevance,
         # and by language: one template goes to the whole batch)
-        batches = self._group_prospects(prospects_with_email, languages)
+        batches = self._group_prospects(prospects_with_email, languages, kinds)
 
         for batch_name, prospects in batches.items():
             if not prospects:
@@ -160,7 +171,7 @@ class Writer:
             # Generate the email sequence
             language = languages.get(prospects[0].id, "en")
             self._no_reply = False
-            sequence = await self._write_sequence(prospects, language)
+            sequence = await self._write_sequence(prospects, language, kinds.get(prospects[0].id, ""))
             if not sequence:
                 paused = getattr(self.brain, "paused_reason", "") or (
                     "no reply from the model" if self._no_reply else "")
@@ -335,6 +346,19 @@ Return ONLY JSON: {{"best": <draft number>, "why": "<one sentence>"}}"""
                                       domain=domain, location=getattr(company, "location", "") or "",
                                       description=getattr(company, "description", "") or "")
 
+    async def _site_kind(self, prospect) -> tuple[str, str]:
+        """(kind, phrase) when the company describes itself as a recruiter, a
+        media site or a job board (harvey.icp_filter), else ("", "")."""
+        company = None
+        if prospect.company_id:
+            try:
+                company = await self.state.get_company(prospect.company_id)
+            except Exception:
+                company = None
+        if company is None:
+            return "", ""
+        return site_kind(company.name, company.description)
+
     async def _personalize_first_emails(self, campaign_id: str, prospects: list,
                                         language: str = "en"):
         """Draft a grounded, per-prospect email 1 and stage it in the outbox.
@@ -452,6 +476,9 @@ Return ONLY JSON: {{"best": <draft number>, "why": "<one sentence>"}}"""
         if company:
             if company.description:
                 facts.append(f"- What the company says about itself: {company.description}")
+            kind, phrase = site_kind(company.name, company.description)
+            if kind:
+                facts.append(f"- Going by its own site, the company is {KIND_LABELS[kind]} (\"{phrase}\")")
             if company.tech_stack:
                 facts.append(f"- Tools detected on their website: {', '.join(company.tech_stack[:6])}")
             for signal in company.signals[:3]:
@@ -532,8 +559,10 @@ Return ONLY JSON: {returns}"""
             return None
         return await self._pick_best(facts, drafts[:VARIANTS])
 
-    async def _write_sequence(self, prospects: list, language: str = "en") -> list[EmailStep]:
-        """Ask the brain to write a 3-email sequence."""
+    async def _write_sequence(self, prospects: list, language: str = "en",
+                              kind: str = "") -> list[EmailStep]:
+        """Ask the brain to write a 3-email sequence. ``kind`` is what every
+        company in the batch is by its own site (a recruiter, a media site)."""
         # Build context about the prospects
         prospect_summary = "\n".join(
             f"- {p.full_name()}, {p.title} at {p.company}"
@@ -583,6 +612,10 @@ Pricing: {self.config.product.pricing}"""
         backed = [await self._startup(p.company_id) for p in prospects]
         if prospects and all(b is not None for b in backed):
             prompt += self._startup_playbook()
+        if kind in KIND_LABELS:
+            prompt += (f"\n\nWHO THEY ARE: every company in this batch is {KIND_LABELS[kind]}, "
+                       "going by how its own site describes itself. Write for that kind of "
+                       "company: offer what the product knowledge says to offer it.")
         # Campaign notes only: this template goes to the whole batch, so a
         # note about one person ("met her at the expo") must never reach it.
         prompt += await self._feedback_block([])
@@ -692,15 +725,19 @@ Return ONLY a JSON array (no markdown fences, no commentary):
             logger.warning(f"Writer: Expected 3 emails, got {len(steps)}.")
         return steps
 
-    def _group_prospects(self, prospects: list, languages: dict | None = None) -> dict[str, list]:
+    def _group_prospects(self, prospects: list, languages: dict | None = None,
+                         kinds: dict | None = None) -> dict[str, list]:
         """Group prospects into campaign batches by industry/title combo, and
         by the language they're written to in (``languages``: prospect id ->
-        "fr" | "en"; English batches keep their names)."""
+        "fr" | "en"; English batches keep their names). A company that is a
+        kind of site (``kinds``: prospect id -> "recruiters", "media"...) is
+        batched by its kind instead of its industry."""
         batches: dict[str, list] = {}
 
         for prospect in prospects:
             # Group by industry + rough title category
-            industry = clean_industry(prospect.industry) or "general"
+            industry = ((kinds or {}).get(prospect.id) or clean_industry(prospect.industry)
+                        or "general")
             # Inbox prospects get their own campaign: their templates can't
             # greet anyone by name.
             kind = "inbox-outreach" if prospect.is_company_inbox else "outreach"

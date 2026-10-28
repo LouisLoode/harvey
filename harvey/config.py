@@ -14,6 +14,7 @@ from pydantic import (
     BaseModel, PrivateAttr, TypeAdapter, ValidationError, field_validator, model_validator,
 )
 
+from harvey.icp_filter import SITE_KINDS
 from harvey.paths import PROJECT_ROOT
 
 logger = logging.getLogger("harvey.config")
@@ -90,6 +91,9 @@ class ICPConfig(BaseModel):
     # French activity-code (NAF) prefixes to rule out, read from the company
     # registry: "78." staffing, "64.30" investment funds, "73.11" ad agencies.
     exclude_naf: list[str] = []
+    # Whole kinds of site to rule out, recognised by how their homepage
+    # describes itself: "job_boards", "recruiters", "media".
+    exclude_kinds: list[str] = []
     # The technologies you work in ("NestJS", "Kafka", "Next.js"): a company
     # whose job posts or site mention them gets the STACK_MATCH signal.
     stack_keywords: list[str] = []
@@ -103,6 +107,16 @@ class ICPConfig(BaseModel):
             raise ValueError(f"icp.search_languages: {', '.join(unknown)} isn't supported. "
                              f"Use {', '.join(SEARCH_LANGUAGES)}.")
         return list(dict.fromkeys(langs))
+
+    @field_validator("exclude_kinds", mode="before")
+    @classmethod
+    def _known_kinds(cls, v) -> list[str]:
+        kinds = [str(x).strip().lower() for x in (v or []) if str(x).strip()]
+        unknown = [x for x in kinds if x not in SITE_KINDS]
+        if unknown:
+            raise ValueError(f"icp.exclude_kinds: {', '.join(unknown)} isn't a kind Harvey "
+                             f"knows. Use {', '.join(SITE_KINDS)}.")
+        return list(dict.fromkeys(kinds))
 
 
 class WarmupConfig(BaseModel):
