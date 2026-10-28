@@ -19,7 +19,7 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 
-from harvey.icp_filter import excluded_by, has_exclusions, naf_excluded
+from harvey.icp_filter import has_exclusions, naf_excluded, site_excluded
 from harvey.public_http import public_http_client
 from harvey.startups import funding_text
 
@@ -992,6 +992,7 @@ class ProfileCollector:
         self.icp = icp
         self._client: httpx.AsyncClient | None = None
         self.site_names: dict[str, str] = {}
+        self.descriptions: dict[str, str] = {}
         # Hosts that answered with a bot challenge (SiteGround's 202,
         # Cloudflare's "Just a moment...") rather than a page.
         self.challenged: set[str] = set()
@@ -1345,6 +1346,7 @@ class ProfileCollector:
                 logger.info(f"profile: {domain} unreachable")
             return obs
         self.site_names[company_id] = site_name_from_html(home, domain)
+        self.descriptions[company_id] = _meta_description(home)[:500]
 
         # The language the site declares (<html lang="fr">): which language
         # to write to them in when nothing else says where they are.
@@ -1356,10 +1358,10 @@ class ProfileCollector:
         # registry can add its activity code or closure below.
         excluded: list[str] = []
         if self.wants("ICP_EXCLUDED"):
-            hit = excluded_by(self.icp, self.site_names[company_id], _page_title(home),
-                              _meta_description(home))
+            hit = site_excluded(self.icp, self.site_names[company_id], _page_title(home),
+                                _meta_description(home))
             if hit:
-                excluded.append(f"its site says \"{hit}\"")
+                excluded.append(hit)
 
         # Ads (they are spending TODAY — the strongest budget signal here)
         add("RUNNING_GOOGLE_ADS", num=1 if self._any(home, GOOGLE_ADS) else 0)
@@ -1574,6 +1576,18 @@ class ProfileCollector:
         except Exception as e:
             logger.debug(f"rename_company failed for {domain}: {e}")
 
+    async def _describe(self, company_id: str):
+        """Keep what the homepage says the company is, when nothing has said
+        it yet: discovery stores a name and a domain, and the Writer needs to
+        know a recruiter or a media site from a startup."""
+        description = self.descriptions.pop(company_id, "")
+        if not description:
+            return
+        try:
+            await self.state.describe_company(company_id, description)
+        except Exception as e:
+            logger.debug(f"describe_company failed for {company_id}: {e}")
+
     async def _mark_checked(self, company_id: str):
         try:
             await self.state.mark_company_profiled(company_id)
@@ -1602,6 +1616,7 @@ class ProfileCollector:
             # forever instead of rotating through the rest of the backlog.
             await self._mark_checked(company["id"])
             await self._improve_name(company, domain)
+            await self._describe(company["id"])
             if obs:
                 total += await self.state.add_observations(obs, run_id=run_id)
                 logger.info(f"profile: {domain} → {len(obs)} observation(s)")

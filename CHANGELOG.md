@@ -9,6 +9,26 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **Rule out job boards, recruiters and media sites.** `icp.exclude_kinds:
+  [job_boards, recruiters, media]` recognises each kind by how its homepage
+  describes itself, in English and French ("job portal", "offres d'emploi",
+  "cabinet de recrutement", "executive search", "startup news"). Phrases,
+  not single words, so a careers page or an HR software isn't caught.
+  Profiling records `ICP_EXCLUDED`; the Scout now checks the homepage too
+  before looking for anyone (a company its own search just found had no
+  check at all); and the Writer skips, and no longer counts, people at a
+  company ruled out after they were found. Curly apostrophes now match in
+  `exclude_keywords` too ("fonds d’investissement").
+
+- **Recruiters and media sites get a campaign of their own.** A kind the ICP
+  doesn't rule out is still not a startup: what you offer a recruitment firm
+  (your profile, for its clients) or a media site (work on the site) isn't
+  what you offer a company building a product. The Writer batches each kind
+  apart from the industry batches, so the shared follow-ups are written for
+  it, and tells the model what the company is ("going by its own site, a
+  recruiter"). Profiling now also keeps the homepage's own description for a
+  company that has none, which discovery never stored.
+
 - **Companies: sort by column, and pages, done by the database.** Click a
   column (company, industry, location, size, contacts, source, added) to
   sort it; size sorts by its first number, and missing values sort last

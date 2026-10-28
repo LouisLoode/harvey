@@ -353,7 +353,7 @@ def test_every_preset_checks_and_builds_whether_it_has_one_term_or_several():
 
 def _collector(state, home, pages=None, source_url=""):
     c = ProfileCollector.__new__(ProfileCollector)
-    c.site_names, c.state = {}, state
+    c.site_names, c.descriptions, c.state = {}, {}, state
     fetched = []
 
     async def resolve(self, domain):

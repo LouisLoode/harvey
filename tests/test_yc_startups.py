@@ -75,6 +75,7 @@ async def test_the_profile_collector_records_it(state):
     await state.set_signal_status("YC_BACKED", "confirmed")
     c = ProfileCollector.__new__(ProfileCollector)
     c.confirmed, c.site_names, c.state = await state.confirmed_signal_codes(), {}, state
+    c.descriptions = {}
 
     pages = {"acme.com": "<h1>Acme</h1><p>Acme (YC W24) builds billing.</p>",
              "plain.com": "<h1>Plain</h1><p>Family-run since 1987.</p>"}
@@ -281,6 +282,7 @@ async def test_the_about_page_is_checked_when_the_homepage_is_silent(state):
     await state.set_signal_status("YC_BACKED", "confirmed")
     c = ProfileCollector.__new__(ProfileCollector)
     c.confirmed, c.site_names, c.state = await state.confirmed_signal_codes(), {}, state
+    c.descriptions = {}
     fetched = []
 
     async def resolve(self, domain):
@@ -332,6 +334,7 @@ async def test_profiling_doesnt_overwrite_yc_evidence_with_not_stated(state):
                                 value_num=1, confidence=0.7, evidence_url="https://acme.com/blog/raise")
     c = ProfileCollector.__new__(ProfileCollector)
     c.confirmed, c.site_names, c.state = await state.confirmed_signal_codes(), {}, state
+    c.descriptions = {}
 
     async def resolve(self, domain):
         return f"https://{domain}", "<h1>Acme</h1><p>Billing.</p>"
@@ -415,6 +418,7 @@ async def test_a_wrong_yes_from_profiling_is_undone_by_the_next_profile(state):
                                 value_num=1, observed_at="2026-01-01T00:00:00")
     c = ProfileCollector.__new__(ProfileCollector)
     c.confirmed, c.site_names, c.state = await state.confirmed_signal_codes(), {}, state
+    c.descriptions = {}
 
     async def resolve(self, domain):
         return f"https://{domain}", "<p>Trusted by 300 YC-backed startups.</p>"

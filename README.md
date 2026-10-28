@@ -230,7 +230,7 @@ Every signal shows what it is in plain language, **what it costs**, and how many
 | | `STACK_MATCH` | Which of your `icp.stack_keywords` their job posts, careers page or site framework mention (NestJS, Kafka, Next.js...). |
 | | `NO_TECH_LEADER` | Their team page lists founders or directors and nobody technical: likely a non-technical team building software. |
 | | `COMPANY_AGE`, `HEADCOUNT_BAND`, `NAF_CODE` | For a French company whose site publishes its SIREN: age, headcount band and activity code, from the French company registry (one free request). |
-| | `ICP_EXCLUDED` | Ruled out by `icp.exclude_keywords` (a competitor, a recruiter, a fund) or `icp.exclude_naf`, or closed. Skipped when Harvey looks for contacts. |
+| | `ICP_EXCLUDED` | Ruled out by `icp.exclude_keywords` (a competitor, a recruiter, a fund), `icp.exclude_kinds` (a job board, a recruiter, a media site, by its homepage) or `icp.exclude_naf`, or closed. Skipped when Harvey looks for contacts; its people are never written to. |
 | **People** | `CONTACT_FOUND`, `DECISION_MAKER_TITLE`, `LIKELY_OWNER`, `REGISTRY_VERIFIED` | Who decides, and whether they own the place. `REGISTRY_VERIFIED`: the president, DG or gérant on a French company's legal record, who Harvey can reach when the team page names no one. |
 | **Contact** | `EMAIL_PATTERN`, `EMAIL_STATUS`, `CONTACT_FORM_URL` | Whether you can actually reach them. |
 

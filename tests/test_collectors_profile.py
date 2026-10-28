@@ -25,7 +25,7 @@ async def state():
 def collector(confirmed=None):
     c = ProfileCollector.__new__(ProfileCollector)
     c.confirmed = confirmed or set()
-    c.site_names = {}
+    c.site_names, c.descriptions = {}, {}
     return c
 
 

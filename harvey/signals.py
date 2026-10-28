@@ -419,10 +419,12 @@ SIGNAL_CATALOG: list[dict] = [
         "description": (
             "The company is one your ICP rules out: its own name, page title or "
             "description uses a word in icp.exclude_keywords (a competitor, a "
-            "recruiter, a fund), or the registry gives an activity code in "
-            "icp.exclude_naf, or says it has closed. Recorded whenever those lists "
-            "are set (setting them is the confirmation); excluded companies are "
-            "skipped when Harvey looks for contacts."
+            "recruiter, a fund), its homepage describes a kind of site in "
+            "icp.exclude_kinds (a job board, a recruiter, a media site), or the "
+            "registry gives an activity code in icp.exclude_naf, or says it has "
+            "closed. Recorded whenever those lists are set (setting them is the "
+            "confirmation); excluded companies are skipped when Harvey looks for "
+            "contacts, and their people are never written to."
         ),
         "category": "profile",
         "value_type": "bool",
