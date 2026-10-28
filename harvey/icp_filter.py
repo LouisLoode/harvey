@@ -58,7 +58,8 @@ SITE_KINDS = {
         "le média des", "le média de", "média en ligne", "média communautaire",
         "portail d'information", "portail d'informations", "toute l'actualité",
         "actualité des startups", "actualités des startups",
-        "base de données des startups", "annuaire des startups",
+        "base de données des startups", "base de données startup",
+        "annuaire des startups", "annuaire des startup",
     ),
 }
 
@@ -71,7 +72,9 @@ def _fold(text: str) -> str:
     # and NFKD would drop the ’ rather than make it a '.
     text = re.sub(r"[’‘ʼ]", "'", text or "")
     plain = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
-    return re.sub(r"\s+", " ", plain.lower()).strip()
+    # "start-up" and "start up" are how French sites spell it.
+    plain = re.sub(r"\bstart[\s-]+up", "startup", plain.lower())
+    return re.sub(r"\s+", " ", plain).strip()
 
 
 def _words(icp, name: str) -> list[str]:

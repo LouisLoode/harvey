@@ -297,6 +297,7 @@ def test_site_kind_names_any_kind():
     assert site_kind("Talentrive : cabinet de recrutement tech") == ("recruiters", "cabinet de recrutement")
     assert site_kind("Bordage, le média communautaire des passionnés de voile") == (
         "media", "média communautaire")
+    assert site_kind("L'annuaire des start-up de France") == ("media", "annuaire des startup")
     assert site_kind("Lumenhexa — logiciel de planning") == ("", "")
     assert site_kind("Talentrive : cabinet de recrutement", kinds=["media"]) == ("", "")
 
