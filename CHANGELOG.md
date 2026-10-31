@@ -371,6 +371,12 @@ minor versions can still change behaviour.
 
 ### Fixed
 
+- **A throttled TrulyInbox warmup read as switched off.** When too much
+  warmup mail lands in spam, TrulyInbox slows the warmup and reports it as
+  `THROTTLED`. `harvey warmup` said "Warmup isn't on. Turn it on in
+  TrulyInbox", sending people to a switch that was already on. A throttled
+  warmup now counts as running, so the report shows the real problem: the
+  share of warmup mail landing in spam.
 - **Prospecting stalled behind the per-company cap.** With
   `contacts_per_company` set, a second person at a company already written
   to stays new and the Writer skips them, but the heartbeat still counted

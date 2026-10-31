@@ -70,7 +70,8 @@ NO_API_CODES = {"150007", "api_access_not_in_plan"}
 PAUSED_CODES = {"040006", "subscription_paused"}
 RATE_CODES = {"150005", "rate_limit_exceeded", "Api.RateLimitExceeded"}
 
-_WARM = {"active", "warming", "enabled", "running"}
+# Throttled: TrulyInbox slowed the warmup after too much spam, but it's still on.
+_WARM = {"active", "warming", "enabled", "running", "throttled"}
 _LOGIN_FAILED = ("auth_error", "auth_expired", "auth_failed", "suspended_auth", "blocked",
                  "disconnect")
 
