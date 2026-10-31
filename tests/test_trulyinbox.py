@@ -66,6 +66,15 @@ async def test_reads_the_sending_mailboxs_warmup():
 
 
 @pytest.mark.asyncio
+async def test_a_throttled_warmup_is_still_warming():
+    transport = _vendor(warmup="THROTTLED", sent=25, spam=6)
+    h = await ti.TrulyInbox(KEY, transport=transport).mailbox_health(ADDR)
+    assert h.warming
+    c = d.check_warmup_service(h, today=date(2026, 10, 5))
+    assert c.status == d.FAIL and "24% spam" in c.detail and "isn't on" not in c.detail
+
+
+@pytest.mark.asyncio
 async def test_a_mailbox_not_in_trulyinbox_is_reported_not_found():
     h = await ti.TrulyInbox(KEY, transport=_vendor(accounts=[])).mailbox_health(ADDR)
     assert not h.found
