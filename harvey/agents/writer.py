@@ -15,7 +15,8 @@ import re
 from datetime import datetime, timezone
 
 from harvey.brain import SKILLS_DIR, Brain
-from harvey.config import HarveyConfig, company_contact_cap
+from harvey.config import (EmailRulesError, HarveyConfig, company_contact_cap, compliance_of,
+                           load_email_rules)
 from harvey.humanize import humanize, humanizer_enabled
 from harvey.integrations.mail_provider import NATIVE_PROVIDERS
 from harvey.models.campaign import Campaign, EmailStep
@@ -85,6 +86,72 @@ PERSON_VAR = re.compile(r"\{\{\s*(first_?name|last_?name|title)\s*\}\}", re.IGNO
 NATIVE_BATCH_CAP = 8
 LEGACY_BATCH_CAP = 50
 
+# The built-in "how" lines each prompt ends with: email 1 is an observation
+# and a question, with no pitch. Operator email rules replace exactly these.
+PERSONAL_SHAPE = """- Under 75 words. One specific observation from the FACTS above, one
+  question. No pitch, no product name.
+- Write the actual text (no merge variables — you know their name/company).
+- Subject: lowercase, 2-5 words."""
+SEQUENCE_SHAPE = """- Email 1: Personalized cold observation + one question. Under 75 words. No pitch.
+- Email 2: Follow-up 3 days later. Different angle, one concrete proof point. Under 75 words.
+- Email 3: Break-up email 4 days after that. Under 40 words. Gracious, not guilt-tripping."""
+SEQUENCE_STYLE = """- Never be pushy or salesy. Be consultative and value-driven.
+- Subject lines: lowercase, 2-5 words."""
+# writer.first_email: offer. The same lines when the first email pitches a service.
+OFFER_PERSONAL_SHAPE = """- Under 60 words, four sentences at most: the trigger, their problem in their
+  words, half a sentence on you, one question asking for a reply (FIRST EMAIL: OFFER).
+- Write the actual text (no merge variables — you know their name/company).
+- Subject: lowercase, 2-5 words."""
+OFFER_SEQUENCE_SHAPE = (
+    "- Email 1: the trigger, their problem in their words, half a sentence on you, "
+    "one question asking for a reply (FIRST EMAIL: OFFER). Under 60 words.\n" + OFFER_FOLLOW_UPS)
+# Why the Writer stopped: Today and `harvey status` show it.
+EMAIL_RULES_PROBLEM_KEY = "email_rules_problem"
+BUILT_IN_FOOTER = "- No postal address, unsubscribe or opt-out line: Harvey adds them when it sends."
+
+
+def operator_rules_block(rules: str) -> str:
+    """The operator's email rules as a prompt section ("" when there are none).
+
+    Trusted text from the person running Harvey, so it isn't fenced. It wins
+    over the built-in style and shape rules, never over the FACTS rule."""
+    if not rules:
+        return ""
+    return (
+        "\n\nOPERATOR'S EMAIL RULES — written by the person running Harvey. For\n"
+        "length, structure, what to say about the product, links, subject lines\n"
+        "and sign-off, these replace the STRICT EMAIL RULES and skills above\n"
+        "wherever the two disagree. They never override the FACTS rule: what you\n"
+        "say about the prospect comes only from the facts given, never invented.\n"
+        "Nor do they allow a fake \"Re:\" or \"Fwd:\" subject line, or a claim of a\n"
+        "conversation that never happened.\n"
+        + rules
+    )
+
+
+def footer_rule(config, rules: str) -> str:
+    """What the prompt says about the lines Harvey adds when it sends.
+
+    With operator rules it names only what Harvey really adds: an opt-out
+    sentence the operator writes into the body must not sit on top of the
+    configured opt_out_line, and must not be dropped when there is none."""
+    if not rules:
+        return BUILT_IN_FOOTER
+    compliance = compliance_of(config)
+    lines = []
+    if compliance.postal_address.strip():
+        lines.append("- No postal address: Harvey adds it under the email when it sends.")
+    opt_out = compliance.opt_out_line.strip()
+    if opt_out:
+        lines.append(
+            f'- Harvey adds this opt-out line under the email when it sends: "{opt_out}".\n'
+            "  Don't write another way to opt out, even if the operator's rules give one.")
+    else:
+        lines.append(
+            "- Harvey adds no opt-out line. If the operator's rules give a sentence that\n"
+            "  lets the reader say no, write it into the body as they say.")
+    return "\n".join(lines)
+
 
 class Writer:
     def __init__(
@@ -109,6 +176,18 @@ class Writer:
 
         # Load foundational skills for this agent
         self.skills = self.brain.load_skills_for_agent("writer")
+        try:
+            self.email_rules = load_email_rules(self.config)
+        except EmailRulesError as e:
+            # The operator replaced the built-in shape on purpose: drafting in
+            # it anyway would put emails they didn't want in the outbox.
+            logger.warning(
+                f"Writer: your email rules (writer.email_rules) can't be used: {e}. "
+                "Writing nothing until that's fixed.")
+            await self.state.set_setting(EMAIL_RULES_PROBLEM_KEY, str(e))
+            return
+        if await self.state.get_setting(EMAIL_RULES_PROBLEM_KEY):
+            await self.state.delete_setting(EMAIL_RULES_PROBLEM_KEY)
 
         # Get prospects that haven't been contacted yet
         new_prospects = await self.state.get_prospects_by_status("new")
@@ -256,11 +335,17 @@ class Writer:
     def _writer_setting(self, name: str, default):
         return getattr(getattr(self.config, "writer", None), name, default)
 
+    def _offer(self) -> bool:
+        """writer.first_email: offer, unless the operator's own email rules
+        (writer.email_rules) replace the built-in shape it belongs to."""
+        return (self._writer_setting("first_email", "observation") == "offer"
+                and not getattr(self, "email_rules", ""))
+
     def _style_blocks(self) -> str:
         """The offer rule (writer.first_email: offer) and the operator's own
         emails (skills/voice_samples.md), when there are any."""
         blocks = []
-        if self._writer_setting("first_email", "observation") == "offer":
+        if self._offer():
             blocks.append(OFFER_FIRST_EMAIL)
         samples = self._voice_samples()
         if samples:
@@ -508,19 +593,24 @@ Return ONLY JSON: {{"best": <draft number>, "why": "<one sentence>"}}"""
         if startup is not None:
             prompt += self._startup_playbook()
         prompt += await self._feedback_block([prospect.id])
+        prompt += self._style_blocks()
+        rules = getattr(self, "email_rules", "")
+        prompt += operator_rules_block(rules)
+        if rules:
+            shape = (
+                "- Follow the OPERATOR'S EMAIL RULES above for this first email: its length,\n"
+                "  structure, what it says about the product, links and subject line.\n"
+                "- Write the actual text (no merge variables — you know their name/company).")
+            strict = "- Follow every STRICT EMAIL RULE above that the operator's rules don't replace."
+        else:
+            shape = OFFER_PERSONAL_SHAPE if self._offer() else PERSONAL_SHAPE
+            strict = "- Follow every STRICT EMAIL RULE above."
 
         lang_rule = f"\n{FRENCH_RULES}\n" if language == "fr" else ""
-        offer = self._writer_setting("first_email", "observation") == "offer"
-        first_rule = ("Under 60 words, four sentences at most: the trigger, their problem in their\n"
-                      "  words, half a sentence on you, one question asking for a reply (FIRST EMAIL: OFFER)."
-                      if offer else
-                      "Under 75 words. One specific observation from the FACTS above, one\n"
-                      "  question. No pitch, no product name.")
         variants = VARIANTS if self._writer_setting("critique", False) else 1
         returns = ('{"subject": "...", "body": "..."}' if variants == 1 else
                    '{"variants": [{"subject": "...", "body": "..."}, ...]} with '
                    f'{variants} drafts, each a genuinely different angle on the FACTS')
-        prompt += self._style_blocks()
         prompt += f"""
 
 Write ONE cold email (the very first touch) to this specific person.
@@ -534,11 +624,9 @@ funding rounds, mutual contacts, metrics, or anything else:
 {UNTRUSTED_RULE}
 
 Requirements:
-- {first_rule}
-- Write the actual text (no merge variables — you know their name/company).
-- Subject: lowercase, 2-5 words.
-- No postal address, unsubscribe or opt-out line: Harvey adds them when it sends.
-- Follow every STRICT EMAIL RULE above.{inbox_rule}
+{shape}
+{footer_rule(self.config, rules)}
+{strict}{inbox_rule}
 {lang_rule}
 Return ONLY JSON: {returns}"""
 
@@ -620,15 +708,23 @@ Pricing: {self.config.product.pricing}"""
         # note about one person ("met her at the expo") must never reach it.
         prompt += await self._feedback_block([])
         prompt += self._style_blocks()
-        offer = self._writer_setting("first_email", "observation") == "offer"
-        email1_rule = ("Email 1: the trigger, their problem in their words, half a sentence on you, "
-                       "one question asking for a reply (FIRST EMAIL: OFFER). Under 60 words."
-                       if offer else
-                       "Email 1: Personalized cold observation + one question. Under 75 words. No pitch.")
-        follow_ups = OFFER_FOLLOW_UPS if offer else (
-            "- Email 2: Follow-up 3 days later. Different angle, one concrete proof point. Under 75 words.\n"
-            "- Email 3: Break-up email 4 days after that. Under 40 words. Gracious, not guilt-tripping.")
+        rules = getattr(self, "email_rules", "")
+        prompt += operator_rules_block(rules)
+        offer = self._offer()
         delays = (4, 6) if offer else (3, 4)
+        if rules:
+            shape = (
+                "- Email 1 is the first touch, email 2 a follow-up 3 days later, email 3 a\n"
+                "  last one 4 days after that. Follow the OPERATOR'S EMAIL RULES above for\n"
+                "  each one's length, structure, what it says about the product, links and\n"
+                "  subject line.")
+            style = ""
+            strict = ("- Follow every rule in the STRICT EMAIL RULES above that the operator's\n"
+                      "  rules don't replace.")
+        else:
+            shape = OFFER_SEQUENCE_SHAPE if offer else SEQUENCE_SHAPE
+            style = "\n" + SEQUENCE_STYLE
+            strict = "- Follow every rule in the STRICT EMAIL RULES above. No exceptions."
 
         prompt += f"""
 
@@ -638,13 +734,10 @@ Write a 3-email cold outreach sequence for prospects like these:
 {UNTRUSTED_RULE}
 
 Requirements:
-- {email1_rule}
-{follow_ups}
-{merge_rule}
-- Never be pushy or salesy. Be consultative and value-driven.
-- Subject lines: lowercase, 2-5 words.
-- No postal address, unsubscribe or opt-out line: Harvey adds them when it sends.
-- Follow every rule in the STRICT EMAIL RULES above. No exceptions.
+{shape}
+{merge_rule}{style}
+{footer_rule(self.config, rules)}
+{strict}
 {FRENCH_RULES + chr(10) if language == "fr" else ""}
 Return ONLY a JSON array (no markdown fences, no commentary):
 [

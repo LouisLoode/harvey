@@ -140,16 +140,6 @@ def unusable_backlog_notice(summary: dict) -> str:
     )
 
 
-async def _sending_paused(state) -> bool:
-    """Is the sending kill switch on? A failed read counts as not paused:
-    the sender checks it again before anything goes out."""
-    from harvey.agents.sender import KILL_SWITCH_KEY
-    try:
-        return bool(await state.get_setting(KILL_SWITCH_KEY))
-    except Exception:
-        return False
-
-
 async def decide_next_action(
     brain: Brain,
     state: StateManager,
@@ -158,10 +148,15 @@ async def decide_next_action(
 ) -> str:
     """Decide what Harvey should do next based on current state.
 
-    Uses deterministic priority rules (handle_replies > send_campaign >
-    write_campaign > prospect > idle) instead of burning a Claude call on a
-    decision that is fully derivable from pipeline counts. This saves budget
-    every cycle and removes a fragile LLM string-parsing step.
+    Uses deterministic priority rules (send_campaign > write_campaign >
+    prospect > idle) instead of burning a Claude call on a decision that is
+    fully derivable from pipeline counts. This saves budget every cycle and
+    removes a fragile LLM string-parsing step.
+
+    Replies are not an action here: the handler rides along every cycle
+    there is a mailbox or an open conversation to read. Making an open
+    conversation the top priority starved everything else for as long as it
+    stayed open, and one waiting on the prospect can stay open for weeks.
     """
     if summary is None:
         summary = await state.get_state_summary(company_contact_cap(config))
@@ -171,18 +166,20 @@ async def decide_next_action(
     # did one held back by contacts_per_company.
     new_prospects, writable = _new_counts(summary)
     draft_campaigns = summary.get("draft_campaigns", 0) or 0
-    open_conversations = summary.get("open_conversations", 0) or 0
 
-    # Held Instantly drafts can't deploy, and while sending is paused (the
-    # kill switch) the sender stages nothing either; choosing send_campaign
-    # for them every cycle would starve the writer and scout forever. The
-    # drafts are staged once sending resumes.
-    held = legacy_sending_held(config) or await _sending_paused(state)
+    # Drafts that can't deploy must not win the cycle: choosing send_campaign
+    # for them every cycle would starve the writer and scout forever. That's
+    # held Instantly drafts, any draft with the email channel off (the
+    # list-building setup), and native drafts while the kill switch is set
+    # (the Sender stages nothing until sending resumes).
+    email = getattr(getattr(config, "channels", None), "email", None)
+    native_paused = (summary.get("sending_paused")
+                     and getattr(email, "provider", "") != "instantly")
+    held = (legacy_sending_held(config) or native_paused
+            or not getattr(email, "enabled", True))
     deployable = 0 if held else draft_campaigns
 
-    if open_conversations > 0:
-        action, reason = "handle_replies", f"{open_conversations} open conversation(s) waiting"
-    elif deployable > 0:
+    if deployable > 0:
         action, reason = "send_campaign", f"{draft_campaigns} draft campaign(s) ready to deploy"
     elif writable > 0:
         action, reason = "write_campaign", f"{writable} new prospect(s) with no drafts ready"
@@ -400,21 +397,16 @@ async def heartbeat(stop_event: asyncio.Event | None = None):
             # 5. Execute — run independent agents in parallel where possible
             # Handler is always safe to run alongside other agents
             tasks = []
-            has_open_convos = summary.get("open_conversations", 0) > 0
+            # An auto-reply handed to you was open until now: keep reading for it.
+            has_open_convos = (summary.get("open_conversations", 0)
+                               + summary.get("auto_reply_handoffs", 0)) > 0
 
-            if action == "handle_replies":
-                tasks.append(("handle_replies", handler.run()))
-            elif action == "prospect":
+            if action == "prospect":
                 tasks.append(("prospect", scout.run()))
-                # Also handle replies in parallel if needed
-                if has_open_convos:
-                    tasks.append(("handle_replies", handler.run()))
                 # Analyst is cheap (no Claude calls) — keep analytics fresh
                 tasks.append(("analyze", analyst.run()))
             elif action == "write_campaign":
                 tasks.append(("write_campaign", writer.run()))
-                if has_open_convos:
-                    tasks.append(("handle_replies", handler.run()))
             elif action == "idle":
                 tasks.append(("analyze", analyst.run()))
 
@@ -422,15 +414,15 @@ async def heartbeat(stop_event: asyncio.Event | None = None):
             # finished: the handler's stop-on-reply must cancel follow-ups to
             # people who just replied before anything is sent. Native mail
             # providers drain the outbox every cycle, so their mailbox is
-            # read every cycle too (handle_replies above only runs when a
-            # conversation is already open).
+            # read every cycle too; any provider is read while a conversation
+            # is open.
             send_tasks = []
             if action == "send_campaign":
                 send_tasks.append(("send_campaign", sender.run))
             elif sender.is_native:
                 send_tasks.append(("send_outbox", sender.run))
-            if sender.is_native and not any(n == "handle_replies" for n, _ in tasks):
-                tasks.append(("read_replies", handler.run()))
+            if sender.is_native or has_open_convos:
+                tasks.append(("handle_replies", handler.run()))
 
             # Profiling rides along every cycle. It is three HTTP requests per
             # business with no model call, so it costs nothing against the
