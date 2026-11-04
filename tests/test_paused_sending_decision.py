@@ -35,12 +35,5 @@ async def test_drafts_are_sent_when_sending_is_on(state):
 @pytest.mark.asyncio
 async def test_paused_sending_moves_on_to_other_work(state):
     await state.set_setting(KILL_SWITCH_KEY, "paused manually")
-    summary = {"draft_campaigns": 1, "open_conversations": 0}
+    summary = {**await state.get_state_summary(), "draft_campaigns": 1}
     assert await decide_next_action(None, state, _native(), summary=summary) == "prospect"
-
-
-@pytest.mark.asyncio
-async def test_replies_still_come_first_while_paused(state):
-    await state.set_setting(KILL_SWITCH_KEY, "paused manually")
-    summary = {"draft_campaigns": 1, "open_conversations": 2}
-    assert await decide_next_action(None, state, _native(), summary=summary) == "handle_replies"

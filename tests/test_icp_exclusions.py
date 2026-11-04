@@ -270,6 +270,7 @@ async def test_people_at_a_ruled_out_company_are_not_written_to(state):
 
     writer = Writer.__new__(Writer)
     writer.state = state
+    writer.config = SimpleNamespace()
     writer.brain = SimpleNamespace(load_skills_for_agent=lambda agent: "")
 
     def drafted(*args, **kw):
