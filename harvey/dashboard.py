@@ -553,6 +553,9 @@ async def get_companies(sort: str = "added", dir: str = "desc", offset: int = 0,
                 c["register_status"], c["register_why"] = r["status"], r["why_not_contacted"]
         page["facets"] = {
             "statuses": sorted(Counter(r["status"] for r in register.values()).items()),
+            # How many companies in each tenth of the fit scale (90-100 last).
+            "fit": [sum(1 for r in register.values() if min(r["fit"] // 10, 9) == tenth)
+                    for tenth in range(10)],
             "sources": [(r["source"], r["n"]) for r in await query_db(
                 "SELECT COALESCE(source, '') AS source, COUNT(*) AS n FROM companies "
                 "GROUP BY 1 ORDER BY 1")],
