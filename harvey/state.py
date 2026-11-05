@@ -587,6 +587,18 @@ COMPANY_SORTS = {
 }
 
 
+# The Campaigns tab's sort keys over campaigns_page's columns: (SQL, is text).
+# First emails sort by how many wait for review in the Outbox.
+CAMPAIGN_SORTS = {
+    "name": ("fold(c.name)", True),
+    "people": ("c.people", False),
+    "first_emails": ("c.to_review", False),
+    "status": ("(CASE c.status WHEN 'draft' THEN 0 WHEN 'active' THEN 1 WHEN 'paused' THEN 2 "
+               "WHEN 'completed' THEN 3 WHEN 'failed' THEN 4 ELSE 5 END)", False),
+    "created": ("c.created_at", False),
+}
+
+
 def _fold(value) -> str:
     """"Élodie" → "elodie": for sorting and searching names the way people read them."""
     text = unicodedata.normalize("NFKD", str(value or ""))
@@ -1634,6 +1646,46 @@ class StateManager:
             ) as cursor:
                 rows = [dict(r) for r in await cursor.fetchall()]
         return {"items": rows, "total": total, "offset": offset, "limit": limit,
+                "sort": sort, "dir": direction.lower()}
+
+    async def campaigns_page(self, sort: str = "created", direction: str = "desc",
+                             offset: int = 0, limit: int = 20,
+                             include_empty: bool = False) -> dict:
+        """One page of the Campaigns tab, sorted in SQL, with each campaign's
+        number of people and of first emails waiting for review. Campaigns
+        with no one left in them are left out unless asked for; ``empty``
+        counts them either way. Ties stay newest first."""
+        sort = sort if sort in CAMPAIGN_SORTS else "created"
+        direction = "ASC" if direction == "asc" else "DESC"
+        limit = max(1, min(int(limit), 100))
+        offset = max(0, int(offset))
+        expr, is_text = CAMPAIGN_SORTS[sort]
+        missing = f"({expr} IS NULL OR {expr} = '')" if is_text else f"({expr} IS NULL)"
+        campaigns = """(SELECT c.*,
+                           CASE WHEN json_valid(c.prospect_ids_json)
+                                THEN json_array_length(c.prospect_ids_json) ELSE 0 END AS people,
+                           COALESCE(f.to_review, 0) AS to_review
+                        FROM campaigns c
+                        LEFT JOIN (SELECT campaign_id, SUM(status = 'pending_review') AS to_review
+                                   FROM outbox WHERE step = 1 GROUP BY campaign_id) f
+                          ON f.campaign_id = c.id) c"""
+        shown = "" if include_empty else "WHERE c.people > 0"
+        async with self._connect() as db:
+            await db.create_function("fold", 1, _fold, deterministic=True)
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                f"SELECT COUNT(*), COALESCE(SUM(c.people = 0), 0) FROM {campaigns}"
+            ) as cursor:
+                every, empty = await cursor.fetchone()
+            async with db.execute(
+                f"""SELECT * FROM {campaigns} {shown}
+                    ORDER BY {missing} ASC, {expr} {direction}, c.created_at DESC, c.id
+                    LIMIT ? OFFSET ?""",
+                (limit, offset),
+            ) as cursor:
+                rows = [dict(r) for r in await cursor.fetchall()]
+        return {"items": rows, "total": every if include_empty else every - empty,
+                "empty": empty, "offset": offset, "limit": limit,
                 "sort": sort, "dir": direction.lower()}
 
     async def colleagues_in_outreach(self, prospect_id: str) -> int:

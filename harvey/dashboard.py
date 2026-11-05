@@ -1515,13 +1515,39 @@ async def export_prospects(all: bool = False, min_score: int = 0, email_status: 
 
 
 @app.get("/api/campaigns")
-async def get_campaigns():
-    rows = await query_db("SELECT * FROM campaigns ORDER BY created_at DESC LIMIT 100")
+async def get_campaigns(sort: str = "created", dir: str = "desc", offset: int = 0,
+                        limit: int = 20, empty: bool = False):
+    """One page of campaigns, sorted and paged in the database, with what the
+    tab needs for each: its emails, its people, where its first emails stand
+    in the Outbox, and why a draft isn't moving. Campaigns with no one left
+    in them only with ``empty``; ``page["empty"]`` counts them."""
+    try:
+        state = _state()
+        await state.init_db()
+        page = await state.campaigns_page(sort=sort, direction=dir, offset=offset,
+                                          limit=limit, include_empty=empty)
+    except Exception as e:
+        return {"error": str(e)}
+    rows = page["items"]
     harvey_sends = _harvey_can_send()
     send_as = "" if harvey_sends else _send_as()
     committed = await _harvey_committed_ids()
     hand_sent = await _hand_sent_ids()
+    # Each campaign's first emails in the Outbox, by status: on Gmail, SMTP
+    # and Microsoft 365 they are written per person, not from the template.
+    first_emails: dict[str, dict] = {}
+    ids = [row["id"] for row in rows]
+    for o in await query_db(
+            "SELECT campaign_id, status, COUNT(*) AS n FROM outbox WHERE step = 1 "
+            f"AND campaign_id IN ({','.join('?' * len(ids))}) GROUP BY campaign_id, status",
+            tuple(ids)) if ids else []:
+        first_emails.setdefault(o["campaign_id"], {})[o["status"]] = o["n"]
+    paused = await query_db("SELECT value FROM settings WHERE key = 'sending_paused'")
+    paused = (paused[0]["value"] or "") if paused else ""
     for row in rows:
+        row["first_emails"] = first_emails.get(row["id"], {})
+        # Why a draft isn't moving: the Sender stages nothing while paused.
+        row["held"] = paused if row.get("status") == "draft" else ""
         try:
             row["sequence"] = json.loads(row.get("sequence_json", "[]"))
         except (json.JSONDecodeError, TypeError):
@@ -1555,7 +1581,7 @@ async def get_campaigns():
                 r["can_mark_sent"] and not harvey_sends
                 and (r.get("email_status") or "guess") in HAND_SENDABLE_EMAIL
             )
-    return rows
+    return page
 
 
 @app.get("/api/prospects/{prospect_id}/opt-out")
