@@ -1198,31 +1198,54 @@ async def _with_website(items: list[dict]) -> list[dict]:
     return items
 
 
+# The Outbox tab's lists: which rows each holds, in what order, how many a page.
+OUTBOX_LISTS = {
+    "pending": ("status = 'pending_review'", "send_at ASC, created_at ASC", 50),
+    # Mail going out right now leads the list.
+    "approved": ("status IN ('sending', 'approved')",
+                 "status = 'sending' DESC, send_at ASC, created_at ASC", 25),
+    "sent": ("status = 'sent'", "sent_at DESC", 25),
+    "failed": ("status IN ('failed', 'rejected', 'cancelled')", "updated_at DESC", 25),
+}
+
+
+async def _outbox_page(name: str, offset: int) -> tuple[list[dict], dict]:
+    """One page of one Outbox list, and where it stands (offset, limit, total)."""
+    where, order, limit = OUTBOX_LISTS[name]
+    total = (await query_db(f"SELECT COUNT(*) AS n FROM outbox WHERE {where}") or [{"n": 0}])[0]["n"]
+    offset = max(0, min(int(offset), max(0, (total - 1) // limit * limit)))
+    rows = await query_db(f"SELECT * FROM outbox WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
+                          (limit, offset))
+    return rows, {"offset": offset, "limit": limit, "total": total}
+
+
 @app.get("/api/outbox")
-async def get_outbox_api():
-    """Outbox queue + kill-switch state for the Outbox tab."""
+async def get_outbox_api(pending_offset: int = 0, approved_offset: int = 0,
+                         sent_offset: int = 0, failed_offset: int = 0):
+    """Outbox queue + kill-switch state for the Outbox tab. Each list is one
+    page; ``pages`` says where each stands, ``held`` how many drafts Harvey
+    held for a look (Approve all leaves those)."""
     try:
         state = _state()
         await state.init_db()
         # A send cut off mid-way shows up under Didn't send even when Harvey
         # isn't running.
         await state.fail_stale_sending_outbox()
+        offsets = {"pending": pending_offset, "approved": approved_offset,
+                   "sent": sent_offset, "failed": failed_offset}
+        lists, pages = {}, {}
+        for name, offset in offsets.items():
+            lists[name], pages[name] = await _outbox_page(name, offset)
         return {
             **_compliance_view(),
             "paused": await state.get_setting("sending_paused"),
             "pending": [{**item, "footer": _compliance_view(item.get("body") or "")["footer"]}
-                        for item in await _with_context(
-                            await state.get_outbox(status="pending_review", limit=100))],
-            # Mail going out right now leads the list.
-            "approved": await _with_website(
-                await state.get_outbox(status="sending", limit=10)
-                + await state.get_outbox(status="approved", limit=50)),
-            "sent": (await query_db(
-                "SELECT * FROM outbox WHERE status = 'sent' "
-                "ORDER BY sent_at DESC LIMIT 25")),
-            "failed": (await query_db(
-                "SELECT * FROM outbox WHERE status IN ('failed','rejected','cancelled') "
-                "ORDER BY updated_at DESC LIMIT 25")),
+                        for item in await _with_context(lists["pending"])],
+            "approved": await _with_website(lists["approved"]),
+            "sent": lists["sent"],
+            "failed": lists["failed"],
+            "pages": pages,
+            "held": await state.count_held_for_review(),
         }
     except Exception as e:
         return {"error": str(e)}
@@ -1746,19 +1769,54 @@ async def undo_opt_out(prospect_id: str, request: Request):
     return {"success": True, "status": "replied"}
 
 
+# The Conversations tab's filters, in the order its buttons show them.
+CONVERSATION_FILTERS = {
+    "needs": lambda c: bool(c.get("draft")) or c.get("status") == "needs_human",
+    "open": lambda c: c.get("status") not in ("closed", "awaiting_reply"),
+    "awaiting": lambda c: c.get("status") == "awaiting_reply",
+    "closed": lambda c: c.get("status") == "closed",
+    "all": lambda c: True,
+}
+
+
 @app.get("/api/conversations")
-async def get_conversations(awaiting: bool = False):
+async def get_conversations(awaiting: bool = False, filter: str = "", offset: int = 0,
+                            limit: int = 20):
+    """One page of conversations under one filter, with how many each filter
+    holds. Handed to you first, then answers waiting for approval, then
+    newest first; with ``awaiting``, people emailed who haven't replied come
+    after the real conversations. With no filter, "needs" when something
+    needs you, else "open" when anything is open, else "all"; ``filter`` in
+    the response says which."""
+    limit = max(1, min(int(limit), 100))
+    offset = max(0, int(offset))
     rows = await query_db("""
         SELECT c.*, p.first_name, p.last_name, p.email as prospect_email, p.company,
                p.status as prospect_status
         FROM conversations c
         LEFT JOIN prospects p ON c.prospect_id = p.id
-        ORDER BY c.updated_at DESC LIMIT 100
+        ORDER BY c.updated_at DESC
     """)
+    # Answers still waiting for approval decide "needs you", so every
+    # conversation's is read, not just this page's.
+    drafts = {d.pop("conversation_id"): d for d in await query_db(
+        "SELECT id, conversation_id, subject, body, send_at FROM outbox "
+        "WHERE kind = 'reply' AND status = 'pending_review' ORDER BY created_at")}
+    for row in rows:
+        row["draft"] = drafts.get(row["id"])
+    if awaiting:
+        rows += await _awaiting_reply()
+    counts = {name: sum(1 for r in rows if keep(r)) for name, keep in CONVERSATION_FILTERS.items()}
+    if filter not in CONVERSATION_FILTERS:
+        filter = "needs" if counts["needs"] else "open" if counts["open"] else "all"
+    rank = lambda c: 0 if c.get("status") == "needs_human" else 1 if c.get("draft") else 2  # noqa: E731
+    shown = sorted((r for r in rows if CONVERSATION_FILTERS[filter](r)), key=rank)
+    page = shown[offset:offset + limit]
     # The stored thread holds replies and Harvey's answers; the cold emails
-    # a reply answers live in the Outbox. Attach those (sent ones only) and
-    # any answer still waiting for approval, so the page shows the exchange.
-    pids = sorted({r["prospect_id"] for r in rows if r.get("prospect_id")})
+    # a reply answers live in the Outbox. Attach those (sent ones only), so
+    # the page shows the exchange. People awaiting a reply carry theirs.
+    synthetic = lambda r: str(r.get("id", "")).startswith("awaiting-")  # noqa: E731
+    pids = sorted({r["prospect_id"] for r in page if r.get("prospect_id") and not synthetic(r)})
     emails: dict[str, list] = {}
     if pids:
         for e in await query_db(
@@ -1766,12 +1824,9 @@ async def get_conversations(awaiting: bool = False):
                 f"WHERE kind = 'sequence' AND status = 'sent' AND prospect_id IN ({_in(pids)}) "
                 "ORDER BY sent_at", tuple(pids)):
             emails.setdefault(e.pop("prospect_id"), []).append(e)
-    cids = [r["id"] for r in rows]
-    drafts = {d.pop("conversation_id"): d for d in (await query_db(
-        "SELECT id, conversation_id, subject, body, send_at FROM outbox "
-        f"WHERE kind = 'reply' AND status = 'pending_review' AND conversation_id IN ({_in(cids)}) "
-        "ORDER BY created_at", tuple(cids)) if cids else [])}
-    for row in rows:
+    for row in page:
+        if synthetic(row):
+            continue
         try:
             row["thread"] = json.loads(row.get("thread_json", "[]"))
         except (json.JSONDecodeError, TypeError):
@@ -1781,10 +1836,8 @@ async def get_conversations(awaiting: bool = False):
         row["emails"] = [{k: v for k, v in e.items() if k != "campaign_id"}
                          for e in emails.get(row.get("prospect_id"), [])
                          if not camp or e.get("campaign_id") == camp]
-        row["draft"] = drafts.get(row["id"])
-    if awaiting:
-        rows += await _awaiting_reply()
-    return rows
+    return {"items": page, "total": len(shown), "offset": offset, "limit": limit,
+            "filter": filter, "counts": counts}
 
 
 async def _awaiting_reply() -> list[dict]:
@@ -1877,14 +1930,21 @@ async def get_trend(days: int = 14, tz: int = 0):
 
 
 @app.get("/api/activity")
-async def get_activity():
-    rows = await query_db("SELECT * FROM actions ORDER BY created_at DESC LIMIT 100")
+async def get_activity(offset: int = 0, limit: int = 50, heartbeats: bool = True):
+    """One page of what Harvey (and you) did, newest first. ``heartbeats=false``
+    leaves out the heartbeat's own entries (agent 'main')."""
+    limit = max(1, min(int(limit), 200))
+    offset = max(0, int(offset))
+    where = "" if heartbeats else "WHERE COALESCE(agent, '') != 'main'"
+    total = (await query_db(f"SELECT COUNT(*) AS n FROM actions {where}") or [{"n": 0}])[0]["n"]
+    rows = await query_db(f"SELECT * FROM actions {where} ORDER BY created_at DESC, rowid DESC "
+                          "LIMIT ? OFFSET ?", (limit, offset))
     for row in rows:
         try:
             row["details"] = json.loads(row.get("details_json", "{}"))
         except (json.JSONDecodeError, TypeError):
             row["details"] = {}
-    return rows
+    return {"items": rows, "total": total, "offset": offset, "limit": limit}
 
 
 # ── Dashboard UI ──

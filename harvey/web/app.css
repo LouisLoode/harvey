@@ -519,8 +519,14 @@ tr:focus-within .row-action { opacity: 1; }
 .segmented button .n { color: var(--text-3); font-weight: 500; }
 .segmented button.on { background: var(--surface); color: var(--text); box-shadow: var(--shadow-border); }
 @media (hover: hover) { .segmented button:not(.on):hover { color: var(--text); } }
-.table-foot { font-size: var(--fs-caption); color: var(--text-3); padding: var(--sp-3) 2px 0; }
-.table-foot .pager { display: inline-flex; gap: var(--sp-2); margin-left: var(--sp-3); vertical-align: middle; }
+.table-foot {
+  font-size: var(--fs-caption); color: var(--text-3); padding: var(--sp-3) 2px 0;
+  display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-2) var(--sp-3);
+}
+.pager { display: inline-flex; align-items: center; gap: 2px; flex-wrap: wrap; margin-left: auto; }
+.pager .btn { min-width: 32px; justify-content: center; font-variant-numeric: tabular-nums; }
+.pager .pager-num.on { background: var(--accent-soft); color: var(--text); opacity: 1; cursor: default; }
+.pager-gap { padding: 0 4px; color: var(--text-3); }
 
 /* ── Today: the queue, the steps, the timeline ───────────────── */
 
@@ -1091,3 +1097,10 @@ a.btn, a.btn:hover { text-decoration: none; }
 .company-edit { margin-top: var(--sp-4); }
 .company-edit textarea.form-input { resize: vertical; line-height: 1.5; }
 .company-filters [hidden] { display: none; }
+
+/* The review rail's pages, under the drafts. */
+.desk-pager {
+  display: flex; flex-direction: column; gap: 6px; margin-top: 6px; padding: 8px 4px 2px;
+  border-top: 1px solid var(--line); font-size: var(--fs-caption); color: var(--text-3);
+}
+.desk-pager .pager { margin-left: 0; }

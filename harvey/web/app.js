@@ -603,10 +603,10 @@ async function loadFunnel() {
 async function loadTodayActivity() {
   const el = document.getElementById('today-activity');
   if (!el) return;
-  const data = await api('/api/activity');
-  if (!Array.isArray(data)) return;  // offline: Today's queue says so
   // Heartbeats are noise here; the Activity tab keeps them.
-  const shown = data.filter(a => a.agent !== 'main').slice(0, 8);
+  const data = await api('/api/activity?limit=8&heartbeats=false');
+  if (!data || !Array.isArray(data.items)) return;  // offline: Today's queue says so
+  const shown = data.items;
   if (!shown.length) {
     el.innerHTML = '<p class="muted" style="font-size:13px">' +
       'Nothing yet. Every action Harvey takes shows up here.</p>';
@@ -1596,8 +1596,23 @@ async function loadUsage() {
 // the approval ladder exists to prevent. One email fills the pane; the rest
 // wait in the rail.
 
+// Where each Outbox list is paged to; the server pages (/api/outbox) and
+// says how many each list holds.
+let _outboxOffsets = {pending: 0, approved: 0, sent: 0, failed: 0}, _outboxPages = {};
+const OUTBOX_PAGERS = {};
+for (const name of Object.keys(_outboxOffsets)) {
+  OUTBOX_PAGERS[name] = n => {
+    if (deskBusy()) return;
+    const page = _outboxPages[name] || {limit: 25, total: 0};
+    _outboxOffsets[name] = pageOffset(n, page.limit, page.total);
+    if (name === 'pending') _desk.i = 0;
+    loadOutbox();
+  };
+}
+
 async function loadOutbox() {
-  const [data, mode] = await Promise.all([api('/api/outbox'), api('/api/sending-mode')]);
+  const params = new URLSearchParams(Object.entries(_outboxOffsets).map(([k, v]) => [k + '_offset', v]));
+  const [data, mode] = await Promise.all([api('/api/outbox?' + params), api('/api/sending-mode')]);
   _sendingMode = mode && !mode.error ? mode : null;
   const banner = document.getElementById('outbox-banner');
   const desk = document.getElementById('outbox-desk');
@@ -1612,6 +1627,10 @@ async function loadOutbox() {
   }
 
   const pending = data.pending || [];
+  _outboxPages = data.pages || {};
+  for (const [name, page] of Object.entries(_outboxPages)) _outboxOffsets[name] = page.offset;
+  const waiting = (_outboxPages.pending || {}).total || pending.length;
+  const approvable = waiting - (data.held || 0);
   _desk.items = pending;
   _desk.footer = data.footer || '';
   // Keep the desk on the draft being edited even if the list shifted.
@@ -1622,14 +1641,14 @@ async function loadOutbox() {
     _desk.unsaved = null;
   }
   if (_desk.i >= pending.length) _desk.i = Math.max(0, pending.length - 1);
-  navCount('nav-outbox', pending.length);
+  navCount('nav-outbox', waiting);
 
   actions.innerHTML =
-    (pending.length && !data.paused
-      ? (pending.length > pending.filter(p => heldReason(p)).length
+    (waiting && !data.paused
+      ? (approvable > 0
         ? '<button class="btn btn-primary btn-sm" onclick="outboxApproveAll()" ' +
           'title="Emails Harvey held are left for you to approve one by one">Approve all ' +
-          (pending.length - pending.filter(p => heldReason(p)).length) + '</button>' : '') : '') +
+          approvable + '</button>' : '') : '') +
     (data.paused
       ? '<button class="btn btn-secondary btn-sm" onclick="sendingToggle(\'resume\')">' +
         'Resume sending</button>'
@@ -1657,16 +1676,21 @@ async function loadOutbox() {
         : 'Every draft Harvey writes lands here first. Approve one and it sends on schedule.') +
     '</div>';
 
-  const table = (title, rows, cols) => {
+  const table = (title, rows, cols, name) => {
     if (!rows || !rows.length) return '';
-    let h = '<div class="subhead">' + title + ' <span class="hint">' + rows.length + '</span></div>' +
+    const page = _outboxPages[name] || {offset: 0, limit: rows.length, total: rows.length};
+    let h = '<div class="subhead">' + title + ' <span class="hint">' + page.total + '</span></div>' +
       '<div class="table-card"><table class="nowrap clip"><thead><tr>' +
       cols.map(c => '<th>' + c[0] + '</th>').join('') + '</tr></thead><tbody>';
     for (const r of rows) {
       h += '<tr>' + cols.map(c => '<td' + (c[2] ? ' class="muted"' : '') + '>' +
         (c[3] ? c[1](r) : escHtml(String(c[1](r) ?? ''))) + '</td>').join('') + '</tr>';
     }
-    return h + '</tbody></table></div>';
+    const foot = page.total > page.limit
+      ? '<div class="table-foot">' + (page.offset + 1) + '–' + (page.offset + rows.length) + ' of ' + page.total +
+        pagerHtml({...page, items: rows}, page.limit, 'OUTBOX_PAGERS.' + name) + '</div>'
+      : '';
+    return h + '</tbody></table></div>' + foot;
   };
 
   list.innerHTML =
@@ -1679,15 +1703,15 @@ async function loadOutbox() {
           'title="Back to review, open to edit">Edit</button>' +
         '<button class="btn btn-ghost btn-sm" onclick="outboxUnapprove(' + jsq(r.id) + ', false)" ' +
           'title="Back to review: it won\'t send until you approve it again">Unapprove</button>', false, true],
-    ]) +
+    ], 'approved') +
     table('Recently sent', data.sent, [
       ['To', r => r.to_email], ['Step', r => r.step], ['Subject', r => r.subject],
       ['Sent', r => formatDate(r.sent_at), true],
-    ]) +
+    ], 'sent') +
     table('Didn\'t send', data.failed, [
       ['To', r => r.to_email], ['Status', r => badge(r.status), false, true],
       ['Reason', r => r.error, true], ['Updated', r => formatDate(r.updated_at), true],
-    ]);
+    ], 'failed');
 }
 
 const CONTACT_SOURCES = {
@@ -1851,6 +1875,14 @@ function heldReason(item) {
   return why.charAt(0).toUpperCase() + why.slice(1);
 }
 
+// Under the review rail, when more drafts wait than one page holds.
+function deskPager(items) {
+  const page = _outboxPages.pending;
+  if (!page || page.total <= page.limit) return '';
+  return '<div class="desk-pager"><span>' + (page.offset + 1) + '–' + (page.offset + items.length) +
+    ' of ' + page.total + '</span>' + pagerHtml({...page, items}, page.limit, 'OUTBOX_PAGERS.pending') + '</div>';
+}
+
 function renderDesk(items, i) {
   const cur = items[i];
   const rail = items.map((it, n) => {
@@ -1899,7 +1931,7 @@ function renderDesk(items, i) {
         'Reject <kbd>R</kbd></button>';
 
   return '<div class="desk">' +
-    '<div class="desk-list">' + rail + '</div>' +
+    '<div class="desk-list">' + rail + deskPager(items) + '</div>' +
     '<div class="desk-pane">' +
       '<div class="to-line">To <b>' + escHtml(cur.to_email) + '</b>' +
         '<span class="tag">' + (cur.kind === 'reply' ? 'Reply' : 'Email ' + escHtml(String(cur.step))) + '</span>' +
@@ -2272,9 +2304,8 @@ function sortCompaniesBy(key) {
   loadCompanies();
 }
 
-function companyPage(step) {
-  const total = (_companyPage && _companyPage.total) || 0;
-  _companyOffset = Math.min(Math.max(0, _companyOffset + step * COMPANY_PAGE_SIZE), Math.max(0, total - 1));
+function companyPage(n) {
+  _companyOffset = pageOffset(n, COMPANY_PAGE_SIZE, _companyPage && _companyPage.total);
   loadCompanies();
 }
 
@@ -2523,10 +2554,8 @@ function sortContactsBy(key) {
   loadProspects();
 }
 
-function contactPage(step) {
-  const total = (_contactPage && _contactPage.total) || 0;
-  _contactOffset = Math.min(Math.max(0, _contactOffset + step * CONTACT_PAGE_SIZE),
-    Math.max(0, total - 1));
+function contactPage(n) {
+  _contactOffset = pageOffset(n, CONTACT_PAGE_SIZE, _contactPage && _contactPage.total);
   loadProspects();
 }
 
@@ -2544,13 +2573,40 @@ function sortHeader(key, label, sort, handler, cls) {
 }
 
 // Previous / Next under a paged table, when there is more than one page.
+// Numbered pages under a list: Previous, 1 … 4 5 6 … 12, Next. `handler`
+// names a function that takes the page to show, counted from 0. Nothing
+// when everything fits on one page.
 function pagerHtml(page, size, handler) {
-  if (page.total <= size) return '';
-  const last = page.offset + page.items.length;
-  return ' <span class="pager">' +
-    '<button class="btn btn-ghost btn-sm" onclick="' + handler + '(-1)"' + (page.offset ? '' : ' disabled') + '>Previous</button>' +
-    '<button class="btn btn-ghost btn-sm" onclick="' + handler + '(1)"' + (last < page.total ? '' : ' disabled') + '>Next</button>' +
-    '</span>';
+  const pages = Math.ceil((page.total || 0) / size);
+  if (pages <= 1) return '';
+  const cur = Math.min(Math.floor((page.offset || 0) / size), pages - 1);
+  // The first and last pages, two either side of this one, and enough near
+  // either end that a gap never hides a single page.
+  const keep = new Set([0, pages - 1]);
+  for (let n = cur - 2; n <= cur + 2; n++) keep.add(n);
+  if (cur < 4) for (let n = 0; n < 6; n++) keep.add(n);
+  if (cur > pages - 5) for (let n = pages - 6; n < pages; n++) keep.add(n);
+  const nums = [...keep].filter(n => n >= 0 && n < pages).sort((a, b) => a - b);
+  const go = n => ' onclick="' + handler + '(' + n + ')"';
+  let html = '<button class="btn btn-ghost btn-sm" aria-label="Previous page"' +
+    (cur > 0 ? go(cur - 1) : ' disabled') + '>&lsaquo; Previous</button>';
+  let last = -1;
+  for (const n of nums) {
+    if (n - last > 1) html += '<span class="pager-gap" aria-hidden="true">…</span>';
+    html += n === cur
+      ? '<button class="btn btn-sm pager-num on" aria-current="page" disabled>' + (n + 1) + '</button>'
+      : '<button class="btn btn-ghost btn-sm pager-num" aria-label="Page ' + (n + 1) + '"' + go(n) + '>' + (n + 1) + '</button>';
+    last = n;
+  }
+  html += '<button class="btn btn-ghost btn-sm" aria-label="Next page"' +
+    (cur < pages - 1 ? go(cur + 1) : ' disabled') + '>Next &rsaquo;</button>';
+  // Not a <nav>: that element is styled as the sidebar.
+  return ' <div class="pager" role="navigation" aria-label="Pages">' + html + '</div>';
+}
+
+// The offset of page n (from 0), kept inside the list.
+function pageOffset(n, size, total) {
+  return Math.max(0, Math.min(n, Math.ceil((total || 0) / size) - 1)) * size;
 }
 
 function filterButtons(list, current, counts, setter) {
@@ -2924,9 +2980,8 @@ function sortCampaignsBy(key) {
   loadCampaigns();
 }
 
-function campaignPage(step) {
-  const total = (_campaignPage && _campaignPage.total) || 0;
-  _campaignOffset = Math.min(Math.max(0, _campaignOffset + step * CAMPAIGNS_PER_PAGE), Math.max(0, total - 1));
+function campaignPage(n) {
+  _campaignOffset = pageOffset(n, CAMPAIGNS_PER_PAGE, _campaignPage && _campaignPage.total);
   loadCampaigns();
 }
 
@@ -2999,54 +3054,79 @@ function campaignDetail(c, i) {
 
 // The whole exchange in order: Harvey's cold emails (from the Outbox), the
 // replies, Harvey's answers, and any answer still waiting for approval.
-let _convos = [], _convoFilter = 'needs';
+let _convos = [], _convoFilter = '';
 const STAGE_LABELS = {
   initial_outreach: 'Outreach', engaged: 'Engaged', qualifying: 'Qualifying', presenting: 'Presenting',
   negotiating: 'Negotiating', closing: 'Closing', closed_won: 'Won', closed_lost: 'Lost',
 };
+// The server filters, sorts (handed to you first, then answers waiting for
+// approval, then newest) and pages (/api/conversations), and counts what each
+// filter holds. The filter and page live outside the list, so the 15-second
+// refresh re-fetches the same page.
 const CONVO_FILTERS = [
-  ['needs', 'Needs you', c => !!c.draft || c.status === 'needs_human'],
-  ['open', 'Open', c => c.status !== 'closed' && c.status !== 'awaiting_reply'],
-  ['awaiting', 'Awaiting reply', c => c.status === 'awaiting_reply'],
-  ['closed', 'Closed', c => c.status === 'closed'],
-  ['all', 'All', () => true],
+  ['needs', 'Needs you'], ['open', 'Open'], ['awaiting', 'Awaiting reply'], ['closed', 'Closed'], ['all', 'All'],
 ];
+const CONVO_PAGE_SIZE = 20;
+let _convoOffset = 0, _convoPage = null, _convoSeq = 0, _convoSig = '';
 
 async function loadConversations() {
   const el = document.getElementById('conversations-list');
-  const data = await api('/api/conversations?awaiting=1');
-  if (!data) { el.innerHTML = offlineState(); return; }
-  _convos = data;
-  if (!data.length) {
+  const seq = ++_convoSeq;
+  // No filter yet: the server opens on "Needs you" only when something needs you.
+  const params = new URLSearchParams({awaiting: 1, offset: _convoOffset, limit: CONVO_PAGE_SIZE});
+  if (_convoFilter) params.set('filter', _convoFilter);
+  const data = await api('/api/conversations?' + params);
+  if (seq !== _convoSeq) return;   // a newer request (a filter, a page) won
+  if (!data || data.error) { el.innerHTML = offlineState(); return; }
+  // "Needs you" with nothing left in it: let the server pick again.
+  if (data.filter === 'needs' && !data.counts.needs && data.counts.all) {
+    _convoFilter = '';
+    return loadConversations();
+  }
+  _convoFilter = data.filter;
+  if (!data.counts.all) {
+    _convos = [];
     el.innerHTML = emptyState(icon('conversations'), 'No conversations yet',
       'No prospects have replied so far. When they do, the Handler agent classifies each reply and responds — every thread shows up here.');
     return;
   }
-  // Open on "Needs you" only when something needs you.
-  if (_convoFilter === 'needs' && !data.some(CONVO_FILTERS[0][2]))
-    _convoFilter = data.some(CONVO_FILTERS[1][2]) ? 'open' : 'all';
+  if (!data.items.length && data.total && _convoOffset) {
+    _convoOffset = pageOffset(Infinity, CONVO_PAGE_SIZE, data.total);
+    return loadConversations();
+  }
+  // Redraw only when something changed, so a card being read doesn't jump.
+  const sig = JSON.stringify(data);
+  if (sig === _convoSig && el.querySelector('.toolbar')) return;
+  _convoSig = sig;
+  _convoPage = data;
+  _convos = data.items;
   renderConversations();
 }
 
-function setConvoFilter(f) { _convoFilter = f; renderConversations(); }
+function setConvoFilter(f) { _convoFilter = f; _convoOffset = 0; loadConversations(); }
+
+function convoPage(n) {
+  _convoOffset = pageOffset(n, CONVO_PAGE_SIZE, _convoPage && _convoPage.total);
+  loadConversations();
+  document.getElementById('conversations-list').scrollIntoView({block: 'start'});
+}
 
 function renderConversations() {
   const el = document.getElementById('conversations-list');
-  const filter = CONVO_FILTERS.find(f => f[0] === _convoFilter) || CONVO_FILTERS[CONVO_FILTERS.length - 1];
+  const data = _convoPage;
   const bar = '<div class="toolbar"><div class="segmented" role="group" aria-label="Filter conversations">' +
-    CONVO_FILTERS.map(f => '<button class="' + (f[0] === filter[0] ? 'on' : '') + '" aria-pressed="' + (f[0] === filter[0]) +
-      '" onclick="setConvoFilter(\'' + f[0] + '\')">' + f[1] + ' <span class="n">' +
-      _convos.filter(f[2]).length + '</span></button>').join('') + '</div></div>';
-  // Handed-to-you first, then drafts waiting; otherwise newest first (as served).
-  const rank = c => c.status === 'needs_human' ? 0 : c.draft ? 1 : 2;
-  const shown = _convos.filter(filter[2]).map((c, i) => [c, i])
-    .sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(x => x[0]);
-  if (!shown.length) {
+    CONVO_FILTERS.map(([key, label]) => '<button class="' + (key === data.filter ? 'on' : '') +
+      '" aria-pressed="' + (key === data.filter) + '" onclick="setConvoFilter(\'' + key + '\')">' + label +
+      ' <span class="n">' + (data.counts[key] || 0) + '</span></button>').join('') + '</div></div>';
+  if (!_convos.length) {
     el.innerHTML = bar + '<div class="card">' + emptyState(icon('check'), 'Nothing here',
       'No conversation matches this filter.') + '</div>';
     return;
   }
-  el.innerHTML = bar + shown.map(convoCard).join('');
+  const first = data.offset + 1, last = data.offset + _convos.length;
+  el.innerHTML = bar + _convos.map(convoCard).join('') +
+    '<div class="table-foot">' + first + '–' + last + ' of ' + data.total + ' conversation' +
+      (data.total === 1 ? '' : 's') + pagerHtml(data, CONVO_PAGE_SIZE, 'convoPage') + '</div>';
 }
 
 function convoCard(c) {
@@ -3132,18 +3212,33 @@ async function setConvoStatus(id, status) {
   loadToday();
 }
 
+// The page lives outside the list, so the 15-second refresh re-fetches the
+// same page; the server pages (/api/activity).
+const ACTIVITY_PAGE_SIZE = 50;
+let _activityOffset = 0, _activityPage = null, _activitySig = '';
+
 async function loadActivity() {
   const el = document.getElementById('activity-list');
-  const data = await api('/api/activity');
-  if (!data) { el.innerHTML = offlineState(); return; }
-  if (!data.length) {
+  const data = await api('/api/activity?offset=' + _activityOffset + '&limit=' + ACTIVITY_PAGE_SIZE);
+  if (!data || data.error) { el.innerHTML = offlineState(); return; }
+  if (!data.total) {
     el.innerHTML = emptyState(icon('activity'), 'No activity yet',
       'Harvey hasn\'t taken any actions. Every prospect found, email written, and reply handled will appear here the moment it happens.');
     return;
   }
+  // New actions push everything down: page 2 now starts elsewhere, which is
+  // fine; only a page past the end needs fixing.
+  if (!data.items.length && _activityOffset) {
+    _activityOffset = pageOffset(Infinity, ACTIVITY_PAGE_SIZE, data.total);
+    return loadActivity();
+  }
+  const sig = JSON.stringify(data);
+  if (sig === _activitySig && el.querySelector('.timeline')) return;
+  _activitySig = sig;
+  _activityPage = data;
   let html = '<div class="card"><div class="timeline">';
   let day = '';
-  for (const a of data) {
+  for (const a of data.items) {
     const label = dayLabel(a.created_at);
     if (label !== day) { day = label; html += '<div class="tl-day">' + escHtml(label) + '</div>'; }
     html += '<div class="tl-item' + (a.agent === 'main' ? ' quiet' : '') + '"><span class="tl-time">' + timeOfDay(a.created_at) + '</span>' +
@@ -3151,7 +3246,16 @@ async function loadActivity() {
       '<span class="tl-text">' + actionText(a) + '</span>' +
       '<span class="tl-agent">' + escHtml(a.agent) + '</span></div>';
   }
-  el.innerHTML = html + '</div></div>';
+  const first = data.offset + 1, last = data.offset + data.items.length;
+  el.innerHTML = html + '</div></div>' +
+    '<div class="table-foot">' + first + '–' + last + ' of ' + data.total + ' action' +
+      (data.total === 1 ? '' : 's') + pagerHtml(data, ACTIVITY_PAGE_SIZE, 'activityPage') + '</div>';
+}
+
+function activityPage(n) {
+  _activityOffset = pageOffset(n, ACTIVITY_PAGE_SIZE, _activityPage && _activityPage.total);
+  loadActivity();
+  document.getElementById('activity-list').scrollIntoView({block: 'start'});
 }
 
 // ── Init & live refresh ──
