@@ -1405,6 +1405,21 @@ class StateManager:
             await db.commit()
             return cursor.rowcount
 
+    async def unapprove_outbox_item(self, item_id: str) -> int:
+        """Send an approved item back for review before it starts sending.
+
+        Atomic on status, like approve and reject: mail already sending or
+        sent is never pulled back. It goes out again only once approved
+        again. Returns rows changed (0/1)."""
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "UPDATE outbox SET status = 'pending_review', approved_by = '', updated_at = ? "
+                "WHERE id = ? AND status = 'approved'",
+                (_utcnow().isoformat(), item_id),
+            )
+            await db.commit()
+            return cursor.rowcount
+
     async def approve_outbox(self, item_id: str | None = None) -> int:
         """Approve one pending item, or ALL pending when item_id is None.
 
