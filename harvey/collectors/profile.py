@@ -993,6 +993,8 @@ class ProfileCollector:
         self._client: httpx.AsyncClient | None = None
         self.site_names: dict[str, str] = {}
         self.descriptions: dict[str, str] = {}
+        # The head office's town, from the registry ("Toulouse, France").
+        self.locations: dict[str, str] = {}
         # Hosts that answered with a bot challenge (SiteGround's 202,
         # Cloudflare's "Just a moment...") rather than a page.
         self.challenged: set[str] = set()
@@ -1537,6 +1539,8 @@ class ProfileCollector:
                 record = None
             if record is not None:
                 where = annuaire_url(record.siren)
+                if record.location:
+                    self.locations[company_id] = record.location
                 age = record.age_years()
                 if age is not None:
                     add("COMPANY_AGE", num=age, text=record.created, url=where)
@@ -1588,6 +1592,17 @@ class ProfileCollector:
         except Exception as e:
             logger.debug(f"describe_company failed for {company_id}: {e}")
 
+    async def _locate(self, company_id: str):
+        """Fill the company's location from the registry's head office, when
+        discovery left it empty or only said "France"."""
+        location = self.locations.pop(company_id, "")
+        if not location:
+            return
+        try:
+            await self.state.locate_company(company_id, location)
+        except Exception as e:
+            logger.debug(f"locate_company failed for {company_id}: {e}")
+
     async def _mark_checked(self, company_id: str):
         try:
             await self.state.mark_company_profiled(company_id)
@@ -1617,6 +1632,7 @@ class ProfileCollector:
             await self._mark_checked(company["id"])
             await self._improve_name(company, domain)
             await self._describe(company["id"])
+            await self._locate(company["id"])
             if obs:
                 total += await self.state.add_observations(obs, run_id=run_id)
                 logger.info(f"profile: {domain} → {len(obs)} observation(s)")

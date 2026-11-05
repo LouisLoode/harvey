@@ -9,6 +9,20 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **Companies get a town from the French registry.** Discovery rarely stores
+  where a company is (often just "France"), so the Companies location filter
+  had little to match. When profiling already reads the registry (a registry
+  signal is confirmed and the site publishes its SIREN), it now also keeps
+  the head office's town and fills `companies.location` with it ("Toulouse,
+  France", "La Roche-sur-Yon, France"; Paris, Lyon and Marseille without the
+  arrondissement). Only an empty location or exactly "France" is replaced,
+  in one guarded UPDATE, so a town discovery found or one you typed stays.
+  The town is kept only when the company's record and its head office are
+  both public, and never the street or postal code: a sole trader's head
+  office is often their home. No extra request. To fill companies already
+  profiled, run `harvey profile --stale-days 0` (with a `--limit` above your
+  company count).
+
 - **Companies: filters, editing and notes.** The tab filters by name or
   domain (case and accents ignored), location, source, status and a fit
   range, on top of its sort and pages; each menu shows how many companies
@@ -23,6 +37,7 @@ minor versions can still change behaviour.
   editable, as discovery dedups on it. `POST /api/companies/{id}` takes
   the fields to change; `/api/companies` takes `q`, `location`, `source`,
   `status`, `fit_min` and `fit_max`, and returns `facets`.
+
 - **Rule out job boards, recruiters and media sites.** `icp.exclude_kinds:
   [job_boards, recruiters, media]` recognises each kind by how its homepage
   describes itself, in English and French ("job portal", "offres d'emploi",

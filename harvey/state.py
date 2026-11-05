@@ -2344,6 +2344,18 @@ class StateManager:
             )
             await db.commit()
 
+    async def locate_company(self, company_id: str, location: str):
+        """Set a company's location when it has none, or only "France".
+        Anything else stays: a town discovery found, or one the operator
+        typed."""
+        async with self._connect() as db:
+            await db.execute(
+                """UPDATE companies SET location = ?, updated_at = CURRENT_TIMESTAMP
+                   WHERE id = ? AND COALESCE(location, '') IN ('', 'France')""",
+                (location, company_id),
+            )
+            await db.commit()
+
     async def companies_needing_prospects(
         self, limit: int = 10, stale_days: int = 14
     ) -> list[dict]:
