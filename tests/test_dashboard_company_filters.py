@@ -109,6 +109,10 @@ def test_facets_list_every_source_and_status_with_counts(client):
     facets = page(client, q="eclat")["facets"]          # facets ignore the filters
     assert dict(facets["sources"]) == {"discover:osm": 1, "discover:serper": 2, "web_search": 1}
     assert sum(n for _, n in facets["statuses"]) == 4
+    # Tenths of the fit scale, for the slider's histogram; 100 counts in the last.
+    fit = {c["id"]: c["fit"] for c in page(client)["items"]}
+    assert len(facets["fit"]) == 10 and sum(facets["fit"]) == 4
+    assert facets["fit"][min(fit["a1"] // 10, 9)] >= 1
 
 
 # ── Editing ──

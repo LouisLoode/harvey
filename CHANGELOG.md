@@ -12,7 +12,9 @@ minor versions can still change behaviour.
 - **Companies: filters, editing and notes.** The tab filters by name or
   domain (case and accents ignored), location, source, status and a fit
   range, on top of its sort and pages; each menu shows how many companies
-  have each value. A company's card has *Edit*: its name, website, sector,
+  have each value. The fit range is a two-thumb slider over a histogram of
+  where every company's fit falls: drag either end, or click a bar to keep
+  that tenth of the scale (click it again to let go). A company's card has *Edit*: its name, website, sector,
   area, size and description, and **notes**, plain text kept with the
   company for the record (a pencil marks the rows that have some). Every
   change is logged with what it replaced and shows on Activity. A name or

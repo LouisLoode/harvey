@@ -2080,9 +2080,10 @@ async function loadCompanies() {
     // A rebuild (back from a company, after an offline blip) shows the filters still applied.
     for (const [k, v] of Object.entries(_companyFilters)) {
       const input = document.getElementById('company-' + k);
-      if (input && input.tagName !== 'SELECT') input.value = v;
+      if (input && input.tagName !== 'SELECT' && input.type !== 'range') input.value = v;
     }
     _companySig = _companyFacetSig = '';
+    paintFit();
   }
   companyFacets(data.facets || {});
   showClearFilters();
@@ -2096,10 +2097,11 @@ async function loadCompanies() {
 }
 
 function companyToolbar() {
-  const typed = (key, label, cls, type) => '<input class="form-input ' + cls + '" id="company-' + key + '" type="' +
-    (type || 'search') + '" placeholder="' + label + '" aria-label="' + label + '"' +
-    (type === 'number' ? ' min="0" max="100" step="1" inputmode="numeric"' : '') +
+  const typed = (key, label, cls) => '<input class="form-input ' + cls + '" id="company-' + key +
+    '" type="search" placeholder="' + label + '" aria-label="' + label + '"' +
     ' oninput="filterCompanies(\'' + key + '\', this.value, true)">';
+  const thumb = (key, label, value) => '<input type="range" min="0" max="100" step="1" value="' + value +
+    '" id="company-' + key + '" aria-label="' + label + '" oninput="fitSlide(\'' + key + '\')">';
   const picked = (key, label) => '<select class="form-input filter-select" id="company-' + key + '" aria-label="' +
     label + '" onchange="filterCompanies(\'' + key + '\', this.value)"><option value="">' + label + '</option></select>';
   return '<div class="toolbar company-filters">' +
@@ -2108,9 +2110,11 @@ function companyToolbar() {
       'aria-label="Search companies" oninput="filterCompanies(\'q\', this.value, true)"></label>' +
     typed('location', 'Location', 'filter-text') +
     picked('status', 'Any status') + picked('source', 'Any source') +
-    '<span class="fit-range" role="group" aria-label="Fit between">Fit ' +
-      typed('fit_min', '0', 'filter-num', 'number') + '<span aria-hidden="true">–</span>' +
-      typed('fit_max', '100', 'filter-num', 'number') + '</span>' +
+    '<div class="fit-filter" role="group" aria-label="Fit range">' +
+      '<span class="fit-label">Fit <b id="company-fit-value">any</b></span>' +
+      '<div class="fit-slider"><div class="fit-hist" id="company-fit-hist"></div>' +
+        '<div class="fit-track"><div class="fit-fill" id="company-fit-fill"></div></div>' +
+        thumb('fit_min', 'Lowest fit', 0) + thumb('fit_max', 'Highest fit', 100) + '</div></div>' +
     '<button class="btn btn-ghost btn-sm" id="company-clear" onclick="clearCompanyFilters()" hidden>Clear filters</button>' +
     '</div>';
 }
@@ -2133,6 +2137,63 @@ function companyFacets(facets) {
   };
   fill('status', 'Any status', facets.statuses || [], v => escHtml(v));
   fill('source', 'Any source', facets.sources || [], v => sourceLabel(v) || 'Unknown');
+  _companyFitHist = facets.fit || [];
+  paintFit();
+}
+
+// The fit filter: two thumbs on one track, over a histogram of where every
+// company's fit falls. Dragging updates the label and the bars at once and
+// filters when you pause; a click on a bar picks that tenth of the scale.
+let _companyFitHist = [];
+
+function fitRange() {
+  return [+(_companyFilters.fit_min || 0), +(_companyFilters.fit_max === '' ? 100 : _companyFilters.fit_max)];
+}
+
+function fitSlide(key) {
+  const lo = document.getElementById('company-fit_min'), hi = document.getElementById('company-fit_max');
+  let a = +lo.value, b = +hi.value;
+  if (a > b) {    // the thumbs never cross: the one moved stops at the other
+    if (key === 'fit_min') lo.value = a = b; else hi.value = b = a;
+  }
+  setFitRange(a, b, true);
+}
+
+function fitBar(tenth) {
+  const [a, b] = fitRange();
+  const lo = tenth * 10, hi = tenth === 9 ? 100 : lo + 9;
+  // A second click on the only bar picked lets go of it.
+  if (a === lo && b === hi) setFitRange(0, 100); else setFitRange(lo, hi);
+}
+
+function setFitRange(a, b, typed) {
+  _companyFilters.fit_min = a > 0 ? String(a) : '';
+  _companyFilters.fit_max = b < 100 ? String(b) : '';
+  paintFit();
+  filterCompanies('fit_min', _companyFilters.fit_min, typed);
+}
+
+function paintFit() {
+  const [a, b] = fitRange();
+  const lo = document.getElementById('company-fit_min'), hi = document.getElementById('company-fit_max');
+  if (!lo || !hi) return;
+  lo.value = a; hi.value = b;
+  // The upper thumb on top, unless both sit at the right end: then the
+  // lower one must be reachable.
+  lo.style.zIndex = a >= 95 ? 3 : 1;
+  const fill = document.getElementById('company-fit-fill');
+  fill.style.left = a + '%';
+  fill.style.right = (100 - b) + '%';
+  document.getElementById('company-fit-value').textContent = a === 0 && b === 100 ? 'any' : a + '–' + b;
+  const most = Math.max(1, ..._companyFitHist);
+  document.getElementById('company-fit-hist').innerHTML = _companyFitHist.map((n, t) => {
+    const from = t * 10, to = t === 9 ? 100 : from + 9;
+    const on = from <= b && to >= a;
+    return '<button type="button" class="' + (on ? 'on' : '') + '" style="height:' +
+      Math.max(8, Math.round(100 * n / most)) + '%" title="Fit ' + from + '–' + to + ': ' + n +
+      ' compan' + (n === 1 ? 'y' : 'ies') + '" aria-label="Fit ' + from + ' to ' + to + ', ' + n +
+      ' companies" onclick="fitBar(' + t + ')"></button>';
+  }).join('');
 }
 
 // Typing filters once you pause, not on every keystroke.
@@ -2148,8 +2209,9 @@ function clearCompanyFilters() {
   for (const k of Object.keys(_companyFilters)) {
     _companyFilters[k] = '';
     const input = document.getElementById('company-' + k);
-    if (input) input.value = '';
+    if (input && input.type !== 'range') input.value = '';
   }
+  paintFit();
   showClearFilters();
   _companyOffset = 0;
   loadCompanies();
