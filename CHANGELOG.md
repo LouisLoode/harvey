@@ -361,6 +361,23 @@ minor versions can still change behaviour.
 
 ### Changed
 
+- **Every list pages for real.** The dashboard's lists now page on the
+  server under one numbered pager (Previous, 1 … 4 5 6 … 12, Next), with
+  how many each holds. Companies, Contacts and Campaigns move from
+  Previous/Next to it. Lists that used to stop at a fixed number without
+  saying so now show everything, a page at a time:
+  - the Outbox's drafts to review (50 a page, with a pager under the
+    rail), Approved & scheduled, Recently sent and Didn't send (25 each);
+  - Conversations (20 a page; the filters, their counts and the order are
+    now the server's, so nothing past the latest 100 is lost);
+  - Activity (50 a page).
+
+  The Outbox count and *Approve all* use the real totals.
+  `/api/activity` and `/api/conversations` return a page (`items`,
+  `total`, `offset`, `limit`; conversations also `filter` and `counts`),
+  and `/api/outbox` takes `pending_offset`, `approved_offset`,
+  `sent_offset` and `failed_offset` and returns `pages` and `held`.
+  `/api/activity?heartbeats=false` leaves out the heartbeat's entries.
 - **Outbox: each company's website, one click away.** Every draft in the
   review list shows its company's site under the subject, and *Approved &
   scheduled* has a Website column. The link opens in a new tab without
