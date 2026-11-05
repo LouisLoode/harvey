@@ -16,6 +16,7 @@ import pytest
 import pytest_asyncio
 
 from harvey.agents.scout import Scout, _merge_known_people
+from harvey.collectors import profile as profile_module
 from harvey.collectors import registry as R
 from harvey.collectors.profile import ProfileCollector
 from harvey.models.company import Company
@@ -23,6 +24,8 @@ from harvey.signals import seed_signal_catalog
 from harvey.state import StateManager
 
 SIREN = "000000018"
+SIEGE = {"siret": SIREN + "00011", "est_siege": True, "adresse": "12 RUE DE L'EXEMPLE 31000 TOULOUSE",
+         "code_postal": "31000", "libelle_commune": "TOULOUSE", "statut_diffusion_etablissement": "O"}
 RESULT = {
     "siren": SIREN, "nom_complet": "LUMENHEXA", "date_creation": "2022-03-14",
     "tranche_effectif_salarie": "02", "annee_tranche_effectif_salarie": "2024",
@@ -37,6 +40,7 @@ RESULT = {
         {"nom": "GIRARD", "prenoms": "Hugo", "qualite": "Directeur Général",
          "type_dirigeant": "personne physique"},
     ],
+    "siege": SIEGE,
 }
 
 
@@ -88,6 +92,36 @@ def test_a_private_record_gives_no_directors_and_another_siren_nothing():
     assert private.directors == [] and private.naf == "62.01Z"
     assert R.parse_company(RESULT, "000000026") is None
     assert R.parse_company({**RESULT, "etat_administratif": "C"}, SIREN).closed
+
+
+def test_parse_keeps_the_head_office_town_and_never_its_address():
+    company = R.parse_company(RESULT, SIREN)
+    assert company.city == "Toulouse" and company.location == "Toulouse, France"
+    kept = json.dumps(company.__dict__, default=lambda o: o.__dict__)
+    assert "31000" not in kept and "EXEMPLE" not in kept
+
+
+@pytest.mark.parametrize("commune, city", [
+    ("LA ROCHE-SUR-YON", "La Roche-sur-Yon"), ("VILLENEUVE-D'ASCQ", "Villeneuve-d'Ascq"),
+    ("L'ISLE-D'ABEAU", "L'Isle-d'Abeau"), ("PARIS 15", "Paris"), ("LYON 3EME", "Lyon"),
+    ("Saint-Malo", "Saint-Malo"),
+])
+def test_town_names_read_like_towns(commune, city):
+    result = {**RESULT, "siege": {**SIEGE, "libelle_commune": commune}}
+    assert R.parse_company(result, SIREN).city == city
+
+
+@pytest.mark.parametrize("change", [
+    {"statut_diffusion": "P"},                                     # the company's record isn't public
+    {"siege": {**SIEGE, "statut_diffusion_etablissement": "P"}},    # its head office isn't
+    {"siege": {**SIEGE, "libelle_commune": None, "code_postal": None, "code_pays_etranger": "99131",
+               "libelle_commune_etranger": "EXAMPLEVILLE", "libelle_pays_etranger": "BELGIQUE"}},
+    {"siege": {**SIEGE, "libelle_commune": "[ND]"}},
+    {"siege": None},
+])
+def test_no_town_unless_a_public_head_office_in_france(change):
+    company = R.parse_company({**RESULT, **change}, SIREN)
+    assert company.city == "" and company.location == ""
 
 
 def _client(responses):
@@ -220,3 +254,29 @@ async def test_scout_reads_only_the_latest_registry_reading(state):
     found = await scout._registry_directors(cid)
     assert [(p["first_name"], p["last_name"], p["title"], p["owner"]) for p in found] == [
         ("Claire", "Duval", "Président", True)]
+
+
+# ── the head office's town fills companies.location ──
+
+@pytest.mark.asyncio
+async def test_profile_notes_the_head_office_town():
+    c = _profiler({"NAF_CODE"})
+    await c.profile_company("c1", "lumenhexa.example")
+    assert c.locations == {"c1": "Toulouse, France"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("before, after", [
+    ("", "Toulouse, France"),
+    ("France", "Toulouse, France"),
+    ("Lyon, France", "Lyon, France"),           # a town discovery found
+    ("Côte basque", "Côte basque"),             # what the operator typed
+])
+async def test_profiling_fills_only_a_missing_location(state, monkeypatch, before, after):
+    monkeypatch.setattr(profile_module.random, "uniform", lambda a, b: 0)
+    await state.add_company(Company(name="Lumenhexa", domain="lumenhexa.example", location=before))
+    company = await state.get_company_by_domain("lumenhexa.example")
+    c = _profiler({"NAF_CODE"})
+    c.state = state
+    await c.run([{"id": company.id, "name": company.name, "domain": company.domain}])
+    assert (await state.get_company(company.id)).location == after

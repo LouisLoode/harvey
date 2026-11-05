@@ -9,10 +9,13 @@ name search could return a namesake, and its directors would be someone
 else's.
 
 What it gives: creation date, headcount band, activity code (NAF), whether
-the company has closed, and its legal directors. Directors are kept only
-when they are people (not another company), only in a director's role (not
-the auditor), and only when the company's record is public
-(``statut_diffusion`` "O"). Birth dates are never read into Harvey.
+the company has closed, the town of its head office, and its legal
+directors. Directors are kept only when they are people (not another
+company), only in a director's role (not the auditor), and only when the
+company's record is public (``statut_diffusion`` "O"). The head office's
+town is kept on the same condition, and never its street or postal code:
+a sole trader's head office is often their home. Birth dates are never
+read into Harvey.
 """
 
 import asyncio
@@ -56,6 +59,11 @@ _DIRECTOR_ROLE = re.compile(r"(?i)\b(?:pr[ée]sident|directeur g[ée]n[ée]ral|d
 _NOT_DIRECTOR = re.compile(r"(?i)commissaire|surveillance|suppl[ée]ant|liquidateur")
 # "Président de SAS" is a president; the legal form is the registry's detail.
 _LEGAL_FORM_TAIL = re.compile(r"(?i)\s+(?:de|d['’])\s*(?:la\s+)?(?:sas|sasu|sarl|eurl|sa|sca|snc|soci[ée]t[ée]\b.*)$")
+# The words that stay lower case inside a town's name ("Aix-en-Provence").
+_PLACE_PARTICLES = {"sur", "sous", "en", "de", "des", "du", "la", "le", "les", "lès", "lez",
+                    "et", "aux", "au", "d", "l"}
+# Paris, Lyon and Marseille are registered by arrondissement ("PARIS 15").
+_ARRONDISSEMENT = re.compile(r"(?i)^(paris|lyon|marseille)\s+\d.*$")
 
 
 @dataclass
@@ -79,11 +87,17 @@ class RegistryCompany:
     naf: str = ""
     closed: bool = False
     public: bool = False
+    city: str = ""               # the head office's town, in France
     directors: list[Director] = field(default_factory=list)
 
     @property
     def headcount(self) -> tuple[str, int] | None:
         return HEADCOUNT_BANDS.get(self.headcount_code)
+
+    @property
+    def location(self) -> str:
+        """Where the head office is, as companies.location holds it."""
+        return f"{self.city}, France" if self.city else ""
 
     def age_years(self, today: date | None = None) -> float | None:
         try:
@@ -155,6 +169,32 @@ def _tidy_name(text: str) -> str:
     return text
 
 
+def _tidy_place(text: str) -> str:
+    """Registry towns come in capitals ("LA ROCHE-SUR-YON", "PARIS 15")."""
+    text = re.sub(r"\s+", " ", (text or "").strip())
+    text = _ARRONDISSEMENT.sub(r"\1", text)
+    if not text.isupper():
+        return text
+    parts = re.split(r"([ \-'’])", text.lower())
+    words = [i for i, part in enumerate(parts) if part and part not in " -'’"]
+    for i in words:
+        if i == words[0] or parts[i] not in _PLACE_PARTICLES:
+            parts[i] = parts[i].capitalize()
+    return "".join(parts)
+
+
+def head_office_city(result: dict) -> str:
+    """The town of a company's head office in France, or "" when the record
+    or the head office isn't public, or the head office is abroad."""
+    siege = result.get("siege")
+    if not isinstance(siege, dict) or result.get("statut_diffusion") != "O":
+        return ""
+    if siege.get("statut_diffusion_etablissement", "O") != "O" or siege.get("code_pays_etranger"):
+        return ""
+    city = str(siege.get("libelle_commune") or "")
+    return "" if city.startswith("[") else _tidy_place(city)      # a masked value
+
+
 def parse_company(result: dict, siren: str) -> RegistryCompany | None:
     """One search result, read into what Harvey keeps; None unless it is
     the company with exactly this SIREN."""
@@ -169,6 +209,7 @@ def parse_company(result: dict, siren: str) -> RegistryCompany | None:
         naf=str(result.get("activite_principale") or ""),
         closed=result.get("etat_administratif") == "C",
         public=result.get("statut_diffusion") == "O",
+        city=head_office_city(result),
     )
     if not company.public:
         return company
