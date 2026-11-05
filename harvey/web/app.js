@@ -2545,13 +2545,15 @@ function campaignProgress(c) {
       '<span><i class="' + p[2] + '"></i>' + p[0] + ' <b>' + p[1] + '</b></span>').join('') + '</div></div>';
 }
 
-// One row per campaign; a click opens its emails. The page, the open rows and
+// One row per campaign; a click opens its emails. Sort, page, the open rows and
 // whether empty campaigns show live outside the table, so the 15-second
-// refresh redraws only when something changed, and keeps your place when it does.
+// refresh re-fetches the same page and redraws only when something changed.
+// The server sorts and pages (/api/campaigns).
 const CAMPAIGNS_PER_PAGE = 20;
-let _campaignOffset = 0, _campaignSig = '', _campaignShowEmpty = false;
+let _campaignSort = {key: 'created', dir: 'desc'};
+let _campaignOffset = 0, _campaignPage = null, _campaignSeq = 0, _campaignSig = '', _campaignShowEmpty = false;
 const _campaignOpen = new Set();
-
+const CAMPAIGN_SORT_FIRST = {people: 'desc', first_emails: 'desc', created: 'desc'};   // the rest start A→Z
 // "startup SaaS B2B-inbox-outreach-fr": the segment, and what the suffixes say.
 function campaignLabel(name) {
   let n = String(name || 'Untitled campaign');
@@ -2589,34 +2591,41 @@ function firstEmailsCell(c) {
 
 async function loadCampaigns() {
   const el = document.getElementById('campaigns-list');
-  const data = await api('/api/campaigns');
-  if (!data) { el.innerHTML = offlineState(); return; }
+  const seq = ++_campaignSeq;
+  const params = new URLSearchParams({
+    sort: _campaignSort.key, dir: _campaignSort.dir, offset: _campaignOffset, limit: CAMPAIGNS_PER_PAGE,
+  });
+  if (_campaignShowEmpty) params.set('empty', '1');
+  const data = await api('/api/campaigns?' + params);
+  if (seq !== _campaignSeq) return;   // a newer request won
+  if (!data || data.error) { el.innerHTML = offlineState(); return; }
+  // A page past the end (campaigns emptied or removed meanwhile): go to the last one.
+  if (!data.items.length && _campaignOffset && data.total) {
+    _campaignOffset = Math.max(0, Math.floor((data.total - 1) / CAMPAIGNS_PER_PAGE) * CAMPAIGNS_PER_PAGE);
+    return loadCampaigns();
+  }
   const sig = JSON.stringify(data);
   if (sig === _campaignSig && el.querySelector('table')) return;
   _campaignSig = sig;
-  _campaigns = data;
+  _campaignPage = data;
+  _campaigns = data.items;
   renderCampaigns();
 }
 
 function renderCampaigns() {
   const el = document.getElementById('campaigns-list');
-  const data = _campaigns;
-  if (!data.length) {
+  const data = _campaignPage;
+  if (!data.total && !data.empty) {
     el.innerHTML = emptyState(icon('campaigns'), 'No campaigns yet',
       'The Writer agent hasn\'t drafted any sequences. It kicks in automatically once Harvey has scored prospects to write for.');
     return;
   }
-  const empty = data.filter(c => !(c.prospect_ids || []).length).length;
-  const shown = data.map((c, i) => [c, i]).filter(([c]) => _campaignShowEmpty || (c.prospect_ids || []).length);
-  if (_campaignOffset >= shown.length) {
-    _campaignOffset = Math.max(0, Math.floor((shown.length - 1) / CAMPAIGNS_PER_PAGE) * CAMPAIGNS_PER_PAGE);
-  }
-  const rows = shown.slice(_campaignOffset, _campaignOffset + CAMPAIGNS_PER_PAGE);
-  let html = '<div class="table-card"><table class="campaign-table"><thead><tr><th>Campaign</th>' +
-    '<th class="num">People</th>' +
-    '<th title="Each person\'s first email, in the Outbox">First emails</th>' +
-    '<th>Status</th><th>Created</th></tr></thead><tbody>';
-  for (const [c, i] of rows) {
+  const sort = (key, label, cls) => sortHeader(key, label, _campaignSort, 'sortCampaignsBy', cls);
+  let html = '<div class="table-card"><table class="campaign-table"><thead><tr>' +
+    sort('name', 'Campaign') + sort('people', 'People', 'num') +
+    sort('first_emails', 'First emails') + sort('status', 'Status') + sort('created', 'Created') +
+    '</tr></thead><tbody>';
+  _campaigns.forEach((c, i) => {
     const open = _campaignOpen.has(c.id);
     const {label, tags} = campaignLabel(c.name);
     html += '<tr class="clickable' + (open ? ' open' : '') + '" aria-expanded="' + open + '" onclick="toggleCampaign(' + i + ')">' +
@@ -2628,19 +2637,18 @@ function renderCampaigns() {
       '<td>' + campaignState(c) + '</td>' +
       '<td class="muted">' + relTime(c.created_at) + '</td></tr>';
     if (open) html += '<tr class="campaign-detail"><td colspan="5">' + campaignDetail(c, i) + '</td></tr>';
-  }
-  if (!rows.length) {
+  });
+  if (!_campaigns.length) {
     html += '<tr><td colspan="5" class="muted">Every campaign here is empty: its people were moved out or rejected.</td></tr>';
   }
-  const first = rows.length ? _campaignOffset + 1 : 0;
-  const page = {total: shown.length, offset: _campaignOffset, items: rows};
+  const first = _campaigns.length ? data.offset + 1 : 0;
   el.innerHTML = html + '</tbody></table></div>' +
-    '<div class="table-foot">' + first + '–' + (_campaignOffset + rows.length) + ' of ' + shown.length +
-      ' campaign' + (shown.length === 1 ? '' : 's') +
-      (empty ? ' · ' + empty + ' empty ' + (_campaignShowEmpty
+    '<div class="table-foot">' + first + '–' + (data.offset + _campaigns.length) + ' of ' + data.total +
+      ' campaign' + (data.total === 1 ? '' : 's') +
+      (data.empty ? ' · ' + data.empty + ' empty ' + (_campaignShowEmpty
         ? '<button class="btn btn-ghost btn-sm" onclick="showEmptyCampaigns(false)">Hide</button>'
         : 'hidden <button class="btn btn-ghost btn-sm" onclick="showEmptyCampaigns(true)">Show</button>') : '') +
-      pagerHtml(page, CAMPAIGNS_PER_PAGE, 'campaignPage') + '</div>';
+      pagerHtml(data, CAMPAIGNS_PER_PAGE, 'campaignPage') + '</div>';
 }
 
 function toggleCampaign(i) {
@@ -2650,14 +2658,24 @@ function toggleCampaign(i) {
   renderCampaigns();
 }
 
+function sortCampaignsBy(key) {
+  _campaignSort = _campaignSort.key === key
+    ? {key, dir: _campaignSort.dir === 'asc' ? 'desc' : 'asc'}
+    : {key, dir: CAMPAIGN_SORT_FIRST[key] || 'asc'};
+  _campaignOffset = 0;
+  loadCampaigns();
+}
+
 function campaignPage(step) {
-  _campaignOffset = Math.max(0, _campaignOffset + step * CAMPAIGNS_PER_PAGE);
-  renderCampaigns();
+  const total = (_campaignPage && _campaignPage.total) || 0;
+  _campaignOffset = Math.min(Math.max(0, _campaignOffset + step * CAMPAIGNS_PER_PAGE), Math.max(0, total - 1));
+  loadCampaigns();
 }
 
 function showEmptyCampaigns(show) {
   _campaignShowEmpty = show;
-  renderCampaigns();
+  _campaignOffset = 0;
+  loadCampaigns();
 }
 
 // An open campaign: where its people stand, then its emails. When the first

@@ -338,7 +338,10 @@ minor versions can still change behaviour.
   (with French and company-inbox tags read from the name), people, where
   each person's first email stands in the Outbox (to review, approved,
   sent, rejected), and a status that says why a draft isn't moving
-  ("Waiting: sending paused"). A click opens the campaign: who is in it,
+  ("Waiting: sending paused"). Click a column to sort it (first emails by
+  how many wait for review, status with drafts first); `/api/campaigns`
+  now sorts and pages in SQL and returns a page (`items`, `total`, and
+  `empty` for the campaigns left out). A click on a row opens the campaign: who is in it,
   how far they've got, and its follow-ups. When the first emails were
   written per person, the shared template for email 1 is never sent, so it
   is replaced by a link to the Outbox. Campaigns left with no one in them
