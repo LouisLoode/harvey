@@ -545,6 +545,12 @@ MIGRATIONS: list[str] = [
     """
     CREATE INDEX IF NOT EXISTS idx_companies_created ON companies(created_at);
     """,
+    # ── v17: companies edited by hand ──
+    """
+    -- 1 once the operator corrected the name or website on the dashboard:
+    -- automatic renaming and clean-ups leave those two alone from then on.
+    ALTER TABLE companies ADD COLUMN hand_edited INTEGER DEFAULT 0;
+    """,
 ]
 
 # The Contacts tab: filter groups, email statuses and sort columns, all
@@ -586,6 +592,11 @@ COMPANY_SORTS = {
     "added": ("c.created_at", False),
 }
 
+
+# What the operator may change on a company from the dashboard. Not the
+# domain: it is the company's identity, the key discovery dedups on.
+EDITABLE_COMPANY_FIELDS = ("name", "website", "industry", "location", "company_size",
+                           "description", "notes")
 
 # The Campaigns tab's sort keys over campaigns_page's columns: (SQL, is text).
 # First emails sort by how many wait for review in the Outbox.
@@ -684,10 +695,12 @@ class StateManager:
         prospects' copy too, which emails use), and such websites the homepage."""
         from harvey.collectors.discover import clean_company_name, site_root
         async with db.execute(
-            "SELECT id, name, domain, website FROM companies WHERE name LIKE '% lève %' "
+            "SELECT id, name, domain, website FROM companies WHERE (name LIKE '% lève %' "
             "OR name LIKE '% raises %' OR name LIKE '% annonce %' OR name LIKE '% boucle %' "
             "OR name LIKE '% secures %' OR name LIKE '% a levé %' OR name LIKE '%[%' "
-            "OR name LIKE '%(%' OR name LIKE '%:%' OR name LIKE '%, %' OR website LIKE '%://%/_%'"
+            "OR name LIKE '%(%' OR name LIKE '%:%' OR name LIKE '%, %' OR website LIKE '%://%/_%') "
+            # A name or website corrected by hand is the operator's word.
+            "AND COALESCE(hand_edited, 0) = 0"
         ) as cursor:
             rows = await cursor.fetchall()
         changed = False
@@ -1630,11 +1643,43 @@ class StateManager:
                 "limit": limit, "sort": sort, "dir": direction.lower(),
                 "counts": {"status": status_counts, "email": email_counts}}
 
+    @staticmethod
+    def _company_filter(q: str = "", source: str = "", location: str = "",
+                        ids: list[str] | None = None) -> tuple[str, tuple]:
+        """The Companies tab's filters as a WHERE clause over ``c``: name or
+        domain and location contain the text (case and accents ignored),
+        source is exact, and ``ids`` (when given) limits to those companies."""
+        where, args = [], []
+        if q.strip():
+            where.append("(fold(c.name) LIKE ? OR c.domain LIKE ?)")
+            args += [f"%{_fold(q.strip())}%", f"%{q.strip().lower()}%"]
+        if location.strip():
+            where.append("fold(c.location) LIKE ?")
+            args.append(f"%{_fold(location.strip())}%")
+        if source:
+            where.append("COALESCE(c.source, '') = ?")
+            args.append(source)
+        if ids is not None:
+            where.append("c.id IN (SELECT value FROM json_each(?))")
+            args.append(json.dumps(list(ids)))
+        return ("WHERE " + " AND ".join(where) if where else ""), tuple(args)
+
+    async def company_ids(self, q: str = "", source: str = "", location: str = "",
+                          ids: list[str] | None = None) -> list[str]:
+        """The ids of every company the Companies tab's filters keep."""
+        where, args = self._company_filter(q, source, location, ids)
+        async with self._connect() as db:
+            await db.create_function("fold", 1, _fold, deterministic=True)
+            async with db.execute(f"SELECT c.id FROM companies c {where}", args) as cursor:
+                return [r[0] for r in await cursor.fetchall()]
+
     async def companies_page(self, sort: str = "added", direction: str = "desc",
-                             offset: int = 0, limit: int = 50) -> dict:
-        """One page of the Companies tab, sorted in SQL, with each company's
-        number of contacts. Missing values sort last either way; ties stay
-        newest first."""
+                             offset: int = 0, limit: int = 50, q: str = "",
+                             source: str = "", location: str = "",
+                             ids: list[str] | None = None) -> dict:
+        """One page of the Companies tab, filtered and sorted in SQL, with
+        each company's number of contacts. Missing values sort last either
+        way; ties stay newest first. ``total`` counts what the filters keep."""
         sort = sort if sort in COMPANY_SORTS else "added"
         direction = "ASC" if direction == "asc" else "DESC"
         limit = max(1, min(int(limit), 200))
@@ -1645,10 +1690,11 @@ class StateManager:
         if sort == "size":
             order += ", fold(c.company_size) ASC"
         order += ", c.created_at DESC, c.id"
+        where, args = self._company_filter(q, source, location, ids)
         async with self._connect() as db:
             await db.create_function("fold", 1, _fold, deterministic=True)
             db.row_factory = aiosqlite.Row
-            async with db.execute("SELECT COUNT(*) FROM companies") as cursor:
+            async with db.execute(f"SELECT COUNT(*) FROM companies c {where}", args) as cursor:
                 total = (await cursor.fetchone())[0]
             async with db.execute(
                 f"""SELECT c.*, COALESCE(pc.n, 0) AS contact_count
@@ -1656,8 +1702,9 @@ class StateManager:
                     LEFT JOIN (SELECT company_id, COUNT(*) AS n FROM prospects
                                WHERE company_id != '' GROUP BY company_id) pc
                       ON pc.company_id = c.id
+                    {where}
                     ORDER BY {order} LIMIT ? OFFSET ?""",
-                (limit, offset),
+                (*args, limit, offset),
             ) as cursor:
                 rows = [dict(r) for r in await cursor.fetchall()]
         return {"items": rows, "total": total, "offset": offset, "limit": limit,
@@ -2241,18 +2288,51 @@ class StateManager:
             await db.commit()
 
     async def rename_company(self, company_id: str, name: str):
-        """Set a company's name, and the copy each of its prospects carries."""
+        """Set a company's name, and the copy each of its prospects carries.
+        A name the operator set by hand is kept."""
         async with self._connect() as db:
-            await db.execute(
-                "UPDATE companies SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            cursor = await db.execute(
+                "UPDATE companies SET name = ?, updated_at = CURRENT_TIMESTAMP "
+                "WHERE id = ? AND COALESCE(hand_edited, 0) = 0",
                 (name, company_id),
             )
+            if not cursor.rowcount:
+                return
             await db.execute(
                 "UPDATE prospects SET company = ?, updated_at = CURRENT_TIMESTAMP "
                 "WHERE company_id = ?",
                 (name, company_id),
             )
             await db.commit()
+
+    async def edit_company(self, company_id: str, changes: dict) -> dict | None:
+        """Apply the operator's edits (EDITABLE_COMPANY_FIELDS only). Returns
+        {field: (old, new)} for what changed, or None when there is no such
+        company. A new name reaches its prospects' copy, which emails use; a
+        new name or website marks the company hand_edited, so automatic
+        renaming and clean-ups leave them alone."""
+        changes = {k: v for k, v in changes.items() if k in EDITABLE_COMPANY_FIELDS}
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("SELECT * FROM companies WHERE id = ?", (company_id,)) as cursor:
+                row = await cursor.fetchone()
+            if row is None:
+                return None
+            diff = {k: (row[k] or "", v) for k, v in changes.items() if (row[k] or "") != v}
+            if not diff:
+                return {}
+            sets = ", ".join(f"{k} = ?" for k in diff)
+            locked = ", hand_edited = 1" if {"name", "website"} & diff.keys() else ""
+            await db.execute(
+                f"UPDATE companies SET {sets}{locked}, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (*(new for _, new in diff.values()), company_id),
+            )
+            if "name" in diff:
+                await db.execute(
+                    "UPDATE prospects SET company = ?, updated_at = CURRENT_TIMESTAMP "
+                    "WHERE company_id = ?", (diff["name"][1], company_id))
+            await db.commit()
+        return diff
 
     async def describe_company(self, company_id: str, description: str):
         """Set a company's description, unless it already has one."""
