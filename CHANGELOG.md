@@ -332,6 +332,15 @@ minor versions can still change behaviour.
 
 ### Changed
 
+- **Outbox: each company's website, one click away.** Every draft in the
+  review list shows its company's site under the subject, and *Approved &
+  scheduled* has a Website column. The link opens in a new tab without
+  selecting the draft. It is the company's own website, else its domain.
+- **Outbox: take an approval back.** Each email in *Approved & scheduled*
+  that hasn't started sending has *Unapprove*, which returns it to the
+  review desk, and *Edit*, which does the same and opens it there to edit
+  its subject and body. Either way it doesn't send until it is approved
+  again; mail already sending or sent is never pulled back.
 - **Campaigns: one row per campaign.** The tab printed every campaign's
   three emails in full, one card after another, so a few dozen campaigns
   made a page with no end. It is now a table, 20 rows a page: the segment

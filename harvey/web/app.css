@@ -688,6 +688,8 @@ details[open] > summary::before { rotate: 45deg; }
 .desk-item + .desk-item { margin-top: 2px; }
 @media (hover: hover) { .desk-item:hover { background: var(--surface-2); } }
 .desk-item.active { background: var(--accent-soft); }
+.desk-item .sub.site a { color: var(--text-2); }
+@media (hover: hover) { .desk-item .sub.site a:hover { color: var(--text); text-decoration: underline; } }
 .desk-item .di-text { min-width: 0; flex: 1; }
 .desk-item .to { font-size: var(--fs-ui); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .desk-item .sub { font-size: var(--fs-caption); color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

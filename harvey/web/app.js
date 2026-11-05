@@ -1669,8 +1669,14 @@ async function loadOutbox() {
 
   list.innerHTML =
     table('Approved &amp; scheduled', data.approved, [
-      ['To', r => r.to_email], ['Step', r => r.step], ['Subject', r => r.subject],
+      ['To', r => r.to_email], ['Website', r => siteLink(r.website), false, true],
+      ['Step', r => r.step], ['Subject', r => r.subject],
       ['Sends', r => r.status === 'sending' ? badge(r.status) : escHtml(formatDate(r.send_at)), true, true],
+      ['', r => r.status !== 'approved' ? '' :
+        '<button class="btn btn-ghost btn-sm" onclick="outboxUnapprove(' + jsq(r.id) + ', true)" ' +
+          'title="Back to review, open to edit">Edit</button>' +
+        '<button class="btn btn-ghost btn-sm" onclick="outboxUnapprove(' + jsq(r.id) + ', false)" ' +
+          'title="Back to review: it won\'t send until you approve it again">Unapprove</button>', false, true],
     ]) +
     table('Recently sent', data.sent, [
       ['To', r => r.to_email], ['Step', r => r.step], ['Subject', r => r.subject],
@@ -1691,6 +1697,16 @@ const CONTACT_SOURCES = {
   job_board: 'job board',
   web_search: 'web search',
 };
+
+// A company's website as a short link that opens in a new tab ("" when none).
+// It never selects the row or draft it sits in.
+function siteLink(url) {
+  const href = safeHref(url);
+  if (!href) return '';
+  const host = String(url).replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(/\/$/, '');
+  return '<a href="' + href + '" target="_blank" rel="noopener noreferrer" ' +
+    'onclick="event.stopPropagation()" title="' + escHtml(url) + '">' + escHtml(host) + ' &#8599;</a>';
+}
 
 // What the draft is built on, so every claim can be checked against it.
 function renderDeskContext(ctx) {
@@ -1843,7 +1859,9 @@ function renderDesk(items, i) {
       '<div class="di-text"><div class="to">' + escHtml(who) +
         (heldReason(it) ? ' <span class="tag t-bad" title="Harvey held this instead of sending it">Held</span>' : '') +
         '</div>' +
-      '<div class="sub">' + escHtml(it.subject || '(no subject)') + '</div></div>' +
+      '<div class="sub">' + escHtml(it.subject || '(no subject)') + '</div>' +
+      (it.context && siteLink(it.context.website)
+        ? '<div class="sub site">' + siteLink(it.context.website) + '</div>' : '') + '</div>' +
     '</div>';
   }).join('');
 
@@ -1978,6 +1996,26 @@ async function outboxAct(id, action) {
   if (data && data.success) showToast(action === 'approve' ? 'Approved — will send on schedule.' : 'Rejected.', 'success');
   else showToast(failMsg(data, 'Action failed.'), 'error');
   loadOutbox();
+}
+
+// Take an approval back before the email starts sending: it returns to the
+// review desk above, open to edit when asked, and waits for a new approval.
+async function outboxUnapprove(id, edit) {
+  if (deskBusy()) return;
+  const data = await api('/api/outbox/' + encodeURIComponent(id) + '/unapprove', {method: 'POST'});
+  if (!data || !data.success) {
+    showToast(failMsg(data, 'Could not take that approval back.'), 'error');
+    loadOutbox();
+    return;
+  }
+  if (edit) { _desk.editing = id; _desk.unsaved = null; }
+  await loadOutbox();
+  const at = _desk.items.findIndex(p => p.id === id);
+  if (at >= 0 && !edit) deskGo(at);
+  if (!edit) showToast('Back in review. It won\'t send until you approve it again.', 'success');
+  document.getElementById('outbox-desk').scrollIntoView({behavior: 'smooth', block: 'start'});
+  const subject = document.getElementById('desk-subject');
+  if (edit && subject) subject.focus();
 }
 
 async function outboxApproveAll() {

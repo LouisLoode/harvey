@@ -1113,6 +1113,19 @@ async def _with_context(items: list[dict]) -> list[dict]:
     return items
 
 
+async def _with_website(items: list[dict]) -> list[dict]:
+    """Attach each email's company website: its own, else https://domain."""
+    pids = sorted({i["prospect_id"] for i in items if i.get("prospect_id")})
+    sites = {r["id"]: r["website"] or (f"https://{r['domain']}" if r["domain"] else "")
+             for r in (await query_db(
+                 "SELECT p.id, c.website, c.domain FROM prospects p "
+                 "JOIN companies c ON c.id = p.company_id "
+                 f"WHERE p.id IN ({_in(pids)})", tuple(pids)) if pids else [])}
+    for item in items:
+        item["website"] = sites.get(item.get("prospect_id"), "")
+    return items
+
+
 @app.get("/api/outbox")
 async def get_outbox_api():
     """Outbox queue + kill-switch state for the Outbox tab."""
@@ -1129,8 +1142,9 @@ async def get_outbox_api():
                         for item in await _with_context(
                             await state.get_outbox(status="pending_review", limit=100))],
             # Mail going out right now leads the list.
-            "approved": (await state.get_outbox(status="sending", limit=10)
-                         + await state.get_outbox(status="approved", limit=50)),
+            "approved": await _with_website(
+                await state.get_outbox(status="sending", limit=10)
+                + await state.get_outbox(status="approved", limit=50)),
             "sent": (await query_db(
                 "SELECT * FROM outbox WHERE status = 'sent' "
                 "ORDER BY sent_at DESC LIMIT 25")),
@@ -1469,6 +1483,21 @@ async def outbox_reject(item_id: str):
         await state.init_db()
         if not await state.reject_outbox_item(item_id):
             return _refuse("That email is already sending or sent, so it can't be rejected.")
+        return {"success": True}
+    except Exception as e:
+        return JSONResponse({"success": False, "message": str(e)}, status_code=500)
+
+
+@app.post("/api/outbox/{item_id}/unapprove")
+async def outbox_unapprove(item_id: str):
+    """Take an approval back: the email returns to the review desk, where it
+    can be edited, approved again or rejected. Never once it's sending."""
+    try:
+        state = _state()
+        await state.init_db()
+        if not await state.unapprove_outbox_item(item_id):
+            return _refuse("That email is already sending or sent, so it can't be taken back.")
+        await state.log_action("outbox_unapproved", "dashboard", {"outbox_id": item_id})
         return {"success": True}
     except Exception as e:
         return JSONResponse({"success": False, "message": str(e)}, status_code=500)
