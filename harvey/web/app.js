@@ -2583,69 +2583,198 @@ function campaignProgress(c) {
       '<span><i class="' + p[2] + '"></i>' + p[0] + ' <b>' + p[1] + '</b></span>').join('') + '</div></div>';
 }
 
+// One row per campaign; a click opens its emails. Sort, page, the open rows and
+// whether empty campaigns show live outside the table, so the 15-second
+// refresh re-fetches the same page and redraws only when something changed.
+// The server sorts and pages (/api/campaigns).
+const CAMPAIGNS_PER_PAGE = 20;
+let _campaignSort = {key: 'created', dir: 'desc'};
+let _campaignOffset = 0, _campaignPage = null, _campaignSeq = 0, _campaignSig = '', _campaignShowEmpty = false;
+const _campaignOpen = new Set();
+const CAMPAIGN_SORT_FIRST = {people: 'desc', first_emails: 'desc', created: 'desc'};   // the rest start A→Z
+// "startup SaaS B2B-inbox-outreach-fr": the segment, and what the suffixes say.
+function campaignLabel(name) {
+  let n = String(name || 'Untitled campaign');
+  const tags = [];
+  if (/-fr$/.test(n)) { n = n.slice(0, -3); tags.push('French'); }
+  if (/-inbox-outreach$/.test(n)) tags.push('Company inbox');
+  return {label: n.replace(/-(inbox-)?outreach$/, ''), tags};
+}
+
+const CAMPAIGN_STATES = {
+  draft: ['Not scheduled yet', 'waiting'],
+  active: ['Scheduled', 'active'],
+  paused: ['Paused', 'idle'],
+  completed: ['Done', 'good'],
+  failed: ['Failed', 'bad'],
+};
+
+function campaignState(c) {
+  if (c.status === 'draft' && c.held) {
+    return '<span class="badge t-waiting" title="' + escHtml('Sending is paused (' + c.held +
+      '). Harvey schedules this campaign once it resumes.') + '">Waiting: sending paused</span>';
+  }
+  const s = CAMPAIGN_STATES[c.status];
+  return s ? '<span class="badge t-' + s[1] + '">' + s[0] + '</span>' : badge(c.status);
+}
+
+// Where each person's first email stands in the Outbox.
+function firstEmailsCell(c) {
+  const f = c.first_emails || {};
+  const named = {pending_review: 'to review', approved: 'approved', sent: 'sent', rejected: 'rejected'};
+  const order = Object.keys(named).concat(Object.keys(f).filter(k => !own(named, k)));
+  const parts = order.filter(k => f[k]).map(k => f[k] + ' ' + (named[k] || k.replace(/_/g, ' ')));
+  return parts.length ? escHtml(parts.join(' · ')) : '<span class="muted">None yet</span>';
+}
+
 async function loadCampaigns() {
   const el = document.getElementById('campaigns-list');
-  const data = await api('/api/campaigns');
-  if (!data) { el.innerHTML = offlineState(); return; }
-  _campaigns = data;
-  if (!data.length) {
+  const seq = ++_campaignSeq;
+  const params = new URLSearchParams({
+    sort: _campaignSort.key, dir: _campaignSort.dir, offset: _campaignOffset, limit: CAMPAIGNS_PER_PAGE,
+  });
+  if (_campaignShowEmpty) params.set('empty', '1');
+  const data = await api('/api/campaigns?' + params);
+  if (seq !== _campaignSeq) return;   // a newer request won
+  if (!data || data.error) { el.innerHTML = offlineState(); return; }
+  // A page past the end (campaigns emptied or removed meanwhile): go to the last one.
+  if (!data.items.length && _campaignOffset && data.total) {
+    _campaignOffset = Math.max(0, Math.floor((data.total - 1) / CAMPAIGNS_PER_PAGE) * CAMPAIGNS_PER_PAGE);
+    return loadCampaigns();
+  }
+  const sig = JSON.stringify(data);
+  if (sig === _campaignSig && el.querySelector('table')) return;
+  _campaignSig = sig;
+  _campaignPage = data;
+  _campaigns = data.items;
+  renderCampaigns();
+}
+
+function renderCampaigns() {
+  const el = document.getElementById('campaigns-list');
+  const data = _campaignPage;
+  if (!data.total && !data.empty) {
     el.innerHTML = emptyState(icon('campaigns'), 'No campaigns yet',
       'The Writer agent hasn\'t drafted any sequences. It kicks in automatically once Harvey has scored prospects to write for.');
     return;
   }
-  let html = '';
-  data.forEach((c, i) => {
-    let stepsHtml = '';
-    (c.sequence || []).forEach((step, s) => {
-      const sendBtns = (c.recipients || []).map((r, ri) => {
-        // Only offered when Harvey can't send itself and this person can
-        // still be emailed (the server decides: can_send_by_hand).
-        if (r.sent_by_hand) {
-          const tick = '<label style="display:inline-flex;align-items:center;gap:4px;font-size:13px;cursor:pointer">' +
-            '<input type="checkbox" checked onchange="markSent(' + i + ',' + ri + ',this.checked)"> ' +
-            '&#10003; Sent by you</label>';
-          if (s === 0) return '<span class="rcpt-who">' + escHtml(r.email) + '</span>' + tick;
-          // Follow-ups are the user's too: Harvey never emails someone they emailed.
-          return '<span class="rcpt-who">' + escHtml(r.email) + '</span>' +
-            '<button class="btn btn-secondary btn-sm" onclick="openInGmail(' + i + ',' + s + ',' + ri + ')">' +
-            'Open in Gmail</button>' +
-            '<span class="muted" style="font-size:12px">Harvey won\'t send follow-ups to people you emailed yourself.</span>';
-        }
-        if (s !== 0) return '';
-        if (!r.can_send_by_hand) {
-          // Harvey sends here; this only records an email the user already sent.
-          return r.can_mark_sent
-            ? '<label class="muted" style="display:inline-flex;align-items:center;gap:4px;font-size:12px;cursor:pointer">' +
-              '<input type="checkbox" onchange="markSent(' + i + ',' + ri + ',this.checked)"> ' +
-              'I already emailed ' + escHtml(r.email) + ' myself</label>'
-            : '';
-        }
-        const risky = r.email_status === 'risky'
-          ? ' <span class="mini t-waiting">Catch-all, may bounce</span>' : '';
-        return '<span class="rcpt-who">' + escHtml(r.email) + risky + '</span>' +
+  const sort = (key, label, cls) => sortHeader(key, label, _campaignSort, 'sortCampaignsBy', cls);
+  let html = '<div class="table-card"><table class="campaign-table"><thead><tr>' +
+    sort('name', 'Campaign') + sort('people', 'People', 'num') +
+    sort('first_emails', 'First emails') + sort('status', 'Status') + sort('created', 'Created') +
+    '</tr></thead><tbody>';
+  _campaigns.forEach((c, i) => {
+    const open = _campaignOpen.has(c.id);
+    const {label, tags} = campaignLabel(c.name);
+    html += '<tr class="clickable' + (open ? ' open' : '') + '" aria-expanded="' + open + '" onclick="toggleCampaign(' + i + ')">' +
+      '<td><div class="cell-stack"><span class="cell-main"><span class="caret" aria-hidden="true">' +
+        (open ? '▾' : '▸') + '</span> ' + escHtml(label) + '</span>' +
+        (tags.length ? '<span class="cell-sub">' + escHtml(tags.join(' · ')) + '</span>' : '') + '</div></td>' +
+      '<td class="num">' + (c.prospect_ids || []).length + '</td>' +
+      '<td>' + firstEmailsCell(c) + '</td>' +
+      '<td>' + campaignState(c) + '</td>' +
+      '<td class="muted">' + relTime(c.created_at) + '</td></tr>';
+    if (open) html += '<tr class="campaign-detail"><td colspan="5">' + campaignDetail(c, i) + '</td></tr>';
+  });
+  if (!_campaigns.length) {
+    html += '<tr><td colspan="5" class="muted">Every campaign here is empty: its people were moved out or rejected.</td></tr>';
+  }
+  const first = _campaigns.length ? data.offset + 1 : 0;
+  el.innerHTML = html + '</tbody></table></div>' +
+    '<div class="table-foot">' + first + '–' + (data.offset + _campaigns.length) + ' of ' + data.total +
+      ' campaign' + (data.total === 1 ? '' : 's') +
+      (data.empty ? ' · ' + data.empty + ' empty ' + (_campaignShowEmpty
+        ? '<button class="btn btn-ghost btn-sm" onclick="showEmptyCampaigns(false)">Hide</button>'
+        : 'hidden <button class="btn btn-ghost btn-sm" onclick="showEmptyCampaigns(true)">Show</button>') : '') +
+      pagerHtml(data, CAMPAIGNS_PER_PAGE, 'campaignPage') + '</div>';
+}
+
+function toggleCampaign(i) {
+  const c = _campaigns[i];
+  if (!c) return;
+  if (_campaignOpen.has(c.id)) _campaignOpen.delete(c.id); else _campaignOpen.add(c.id);
+  renderCampaigns();
+}
+
+function sortCampaignsBy(key) {
+  _campaignSort = _campaignSort.key === key
+    ? {key, dir: _campaignSort.dir === 'asc' ? 'desc' : 'asc'}
+    : {key, dir: CAMPAIGN_SORT_FIRST[key] || 'asc'};
+  _campaignOffset = 0;
+  loadCampaigns();
+}
+
+function campaignPage(step) {
+  const total = (_campaignPage && _campaignPage.total) || 0;
+  _campaignOffset = Math.min(Math.max(0, _campaignOffset + step * CAMPAIGNS_PER_PAGE), Math.max(0, total - 1));
+  loadCampaigns();
+}
+
+function showEmptyCampaigns(show) {
+  _campaignShowEmpty = show;
+  _campaignOffset = 0;
+  loadCampaigns();
+}
+
+// An open campaign: where its people stand, then its emails. When the first
+// emails are in the Outbox (written per person), the shared template for
+// email 1 is never sent, so it isn't shown.
+function campaignDetail(c, i) {
+  const personal = Object.keys(c.first_emails || {}).length > 0;
+  let stepsHtml = '';
+  (c.sequence || []).forEach((step, s) => {
+    const sendBtns = (c.recipients || []).map((r, ri) => {
+      // Only offered when Harvey can't send itself and this person can
+      // still be emailed (the server decides: can_send_by_hand).
+      if (r.sent_by_hand) {
+        const tick = '<label style="display:inline-flex;align-items:center;gap:4px;font-size:13px;cursor:pointer">' +
+          '<input type="checkbox" checked onchange="markSent(' + i + ',' + ri + ',this.checked)"> ' +
+          '&#10003; Sent by you</label>';
+        if (s === 0) return '<span class="rcpt-who">' + escHtml(r.email) + '</span>' + tick;
+        // Follow-ups are the user's too: Harvey never emails someone they emailed.
+        return '<span class="rcpt-who">' + escHtml(r.email) + '</span>' +
           '<button class="btn btn-secondary btn-sm" onclick="openInGmail(' + i + ',' + s + ',' + ri + ')">' +
           'Open in Gmail</button>' +
-          '<label><input type="checkbox" onchange="markSent(' + i + ',' + ri + ',this.checked)"> Mark as sent</label>'
-      }).filter(Boolean).map(x => '<div class="rcpt">' + x + '</div>').join('');
-      stepsHtml += '<div class="email-step"><span class="step-dot">' + escHtml(String(step.step || '?')) + '</span>' +
-        '<div><div class="step-num">' + (s === 0 ? 'First email' : 'Follow-up') +
-        (step.delay_days ? ' &middot; ' + escHtml(String(step.delay_days)) + ' days after the last' : '') + '</div>' +
-        '<div class="subject">' + escHtml(step.subject) + '</div>' +
-        '<div class="body">' + escHtml(step.body) + '</div>' +
-        (sendBtns ? '<div class="step-actions">' + sendBtns + '</div>' : '') +
-        '</div></div>';
-    });
-    const pc = (c.prospect_ids || []).length;
-    html += '<div class="campaign-card"><div class="campaign-top">' +
-      '<div class="campaign-title"><h3>' + escHtml(c.name || 'Untitled Campaign') + '</h3>' +
-        '<button class="btn btn-ghost btn-sm" onclick="fbCampaign(' + i + ')">Feedback</button></div>' +
-      '<div class="meta">' + badge(c.status) + '<span>' + pc + ' prospect' + (pc !== 1 ? 's' : '') + '</span>' +
-        '<span>' + (c.sequence || []).length + ' emails</span><span>Created ' + relTime(c.created_at) + '</span></div>' +
-      campaignProgress(c) + '</div>' +
-      '<div class="sequence">' +
-      (stepsHtml || '<p class="muted" style="font-size:13px;padding-top:16px">No email steps in this campaign.</p>') + '</div></div>';
+          '<span class="muted" style="font-size:12px">Harvey won\'t send follow-ups to people you emailed yourself.</span>';
+      }
+      if (s !== 0) return '';
+      if (!r.can_send_by_hand) {
+        // Harvey sends here; this only records an email the user already sent.
+        return r.can_mark_sent
+          ? '<label class="muted" style="display:inline-flex;align-items:center;gap:4px;font-size:12px;cursor:pointer">' +
+            '<input type="checkbox" onchange="markSent(' + i + ',' + ri + ',this.checked)"> ' +
+            'I already emailed ' + escHtml(r.email) + ' myself</label>'
+          : '';
+      }
+      const risky = r.email_status === 'risky'
+        ? ' <span class="mini t-waiting">Catch-all, may bounce</span>' : '';
+      return '<span class="rcpt-who">' + escHtml(r.email) + risky + '</span>' +
+        '<button class="btn btn-secondary btn-sm" onclick="openInGmail(' + i + ',' + s + ',' + ri + ')">' +
+        'Open in Gmail</button>' +
+        '<label><input type="checkbox" onchange="markSent(' + i + ',' + ri + ',this.checked)"> Mark as sent</label>'
+    }).filter(Boolean).map(x => '<div class="rcpt">' + x + '</div>').join('');
+    const text = s === 0 && personal
+      ? '<p class="step-note">Written for each person from what Harvey found on their company, so there ' +
+        'is no shared text. You read and approve each one in the Outbox.</p>' +
+        '<button class="btn btn-secondary btn-sm" style="margin-top:8px" onclick="goTab(\'outbox\')">' +
+        'Open the Outbox' + icon('arrow') + '</button>'
+      : '<div class="subject">' + escHtml(step.subject) + '</div><div class="body">' + escHtml(step.body) + '</div>';
+    stepsHtml += '<div class="email-step"><span class="step-dot">' + escHtml(String(step.step || '?')) + '</span>' +
+      '<div><div class="step-num">' + (s === 0 ? 'First email' : 'Follow-up') +
+      (step.delay_days ? ' &middot; ' + escHtml(String(step.delay_days)) + ' days after the last' : '') + '</div>' +
+      text + (sendBtns ? '<div class="step-actions">' + sendBtns + '</div>' : '') +
+      '</div></div>';
   });
-  el.innerHTML = html;
+  const people = (c.recipients || []).map(r =>
+    '<span>' + escHtml([r.first_name, r.last_name].filter(Boolean).join(' ') || r.email) +
+    (r.company ? ' <span class="muted">· ' + escHtml(r.company) + '</span>' : '') + '</span>').join('');
+  return '<div class="campaign-open">' +
+    '<div class="campaign-title"><div class="campaign-people">' + (people || '<span class="muted">No one left in this campaign.</span>') + '</div>' +
+      '<button class="btn btn-ghost btn-sm" onclick="fbCampaign(' + i + ')">Feedback</button></div>' +
+    campaignProgress(c) +
+    '<div class="sequence">' +
+    (stepsHtml || '<p class="muted" style="font-size:13px;padding-top:16px">No email steps in this campaign.</p>') +
+    '</div></div>';
 }
 
 // The whole exchange in order: Harvey's cold emails (from the Outbox), the
