@@ -332,6 +332,18 @@ minor versions can still change behaviour.
 
 ### Changed
 
+- **Campaigns: one row per campaign.** The tab printed every campaign's
+  three emails in full, one card after another, so a few dozen campaigns
+  made a page with no end. It is now a table, 20 rows a page: the segment
+  (with French and company-inbox tags read from the name), people, where
+  each person's first email stands in the Outbox (to review, approved,
+  sent, rejected), and a status that says why a draft isn't moving
+  ("Waiting: sending paused"). A click opens the campaign: who is in it,
+  how far they've got, and its follow-ups. When the first emails were
+  written per person, the shared template for email 1 is never sent, so it
+  is replaced by a link to the Outbox. Campaigns left with no one in them
+  are hidden behind a "Show" button. Sending by hand (Open in Gmail, Mark
+  as sent) and campaign feedback work as before, inside the open row.
 - **A rejected email guess gets the other common format.** When the
   verifier rejects `first.last@`, Harvey verifies `first@` once (and the
   reverse) before giving the person up as invalid; only a confirmed mailbox

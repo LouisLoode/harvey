@@ -1521,7 +1521,18 @@ async def get_campaigns():
     send_as = "" if harvey_sends else _send_as()
     committed = await _harvey_committed_ids()
     hand_sent = await _hand_sent_ids()
+    # Each campaign's first emails in the Outbox, by status: on Gmail, SMTP
+    # and Microsoft 365 they are written per person, not from the template.
+    first_emails: dict[str, dict] = {}
+    for o in await query_db("SELECT campaign_id, status, COUNT(*) AS n FROM outbox "
+                            "WHERE step = 1 GROUP BY campaign_id, status"):
+        first_emails.setdefault(o["campaign_id"], {})[o["status"]] = o["n"]
+    paused = await query_db("SELECT value FROM settings WHERE key = 'sending_paused'")
+    paused = (paused[0]["value"] or "") if paused else ""
     for row in rows:
+        row["first_emails"] = first_emails.get(row["id"], {})
+        # Why a draft isn't moving: the Sender stages nothing while paused.
+        row["held"] = paused if row.get("status") == "draft" else ""
         try:
             row["sequence"] = json.loads(row.get("sequence_json", "[]"))
         except (json.JSONDecodeError, TypeError):
