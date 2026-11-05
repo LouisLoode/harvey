@@ -264,6 +264,8 @@ function actionText(a) {
     case 'reply_after_opt_out': return who + ' wrote again after opting out · no reply sent';
     case 'escalation': return 'Flagged ' + who + ' for you' + (d.reason ? ' · ' + escHtml(d.reason) : '');
     case 'bounce': return 'Email to ' + who + ' bounced';
+    case 'company_edited': return 'You edited ' + (d.company ? '“' + escHtml(d.company) + '”' : 'a company') +
+      ': ' + escHtml(Object.keys(d.changes || {}).join(', ').replace(/_/g, ' '));
     case 'manual_send': return 'You marked a contact as emailed by hand';
     case 'manual_send_undone': return 'You undid a hand-sent mark';
     case 'outbox_edited': return 'You edited a draft';
@@ -2035,41 +2037,137 @@ async function sendingToggle(action) {
   loadOutbox();
 }
 
-// Sort and page live outside the table, so the 15-second refresh re-fetches
-// the same page. The server sorts and pages (/api/companies).
+// Sort, filters and page live outside the table, so the 15-second refresh
+// re-fetches the same page. The server filters, sorts and pages
+// (/api/companies). The filter bar is built once: a refresh redraws the rows
+// only, never an input being typed in.
 let _companySort = {key: 'added', dir: 'desc'};
 let _companyOffset = 0, _companyPage = null, _companySeq = 0, _companySig = '';
+let _companyFilters = {q: '', location: '', status: '', source: '', fit_min: '', fit_max: ''};
+let _companyTimer = null, _companyFacetSig = '', _companyOpen = null;
 const COMPANY_PAGE_SIZE = 50;
 const COMPANY_SORT_FIRST = {fit: 'desc', contacts: 'desc', added: 'desc', size: 'desc'};   // the rest start A→Z
 
 async function loadCompanies() {
   companyDrill = false;
+  _companyOpen = null;
   const el = document.getElementById('companies-list');
   const seq = ++_companySeq;
   const params = new URLSearchParams({
     sort: _companySort.key, dir: _companySort.dir, offset: _companyOffset, limit: COMPANY_PAGE_SIZE,
   });
+  for (const [k, v] of Object.entries(_companyFilters)) {
+    if (String(v).trim() !== '') params.set(k, String(v).trim());
+  }
   const data = await api('/api/companies?' + params);
   if (seq !== _companySeq || companyDrill) return;   // a newer request won, or a company was opened
   if (!data || data.error) { el.innerHTML = offlineState(); return; }
-  if (!data.total) {
+  const everyone = ((data.facets || {}).sources || []).reduce((n, s) => n + s[1], 0);
+  if (!everyone) {
     _companies = [];
     el.innerHTML = emptyState(icon('companies'), 'No companies yet',
       'Confirm your <b>Signals</b>, then find businesses on the <b>Discover</b> tab. ' +
       'OpenStreetMap is free and needs no account.');
     return;
   }
-  // A page past the end (companies removed meanwhile): go to the last one.
-  if (!data.items.length && _companyOffset) {
+  // A page past the end (companies left the filter meanwhile): go to the last one.
+  if (!data.items.length && data.total && _companyOffset) {
     _companyOffset = Math.max(0, Math.floor((data.total - 1) / COMPANY_PAGE_SIZE) * COMPANY_PAGE_SIZE);
     return loadCompanies();
   }
+  if (!document.getElementById('company-rows')) {
+    el.innerHTML = companyToolbar() + '<div id="company-rows"></div>';
+    // A rebuild (back from a company, after an offline blip) shows the filters still applied.
+    for (const [k, v] of Object.entries(_companyFilters)) {
+      const input = document.getElementById('company-' + k);
+      if (input && input.tagName !== 'SELECT') input.value = v;
+    }
+    _companySig = _companyFacetSig = '';
+  }
+  companyFacets(data.facets || {});
+  showClearFilters();
   // The 15-second refresh re-renders only when something changed.
   const sig = JSON.stringify(data);
-  if (sig === _companySig && el.querySelector('table')) return;
+  if (sig === _companySig) return;
   _companySig = sig;
   _companies = data.items;
   _companyPage = data;
+  renderCompanyRows();
+}
+
+function companyToolbar() {
+  const typed = (key, label, cls, type) => '<input class="form-input ' + cls + '" id="company-' + key + '" type="' +
+    (type || 'search') + '" placeholder="' + label + '" aria-label="' + label + '"' +
+    (type === 'number' ? ' min="0" max="100" step="1" inputmode="numeric"' : '') +
+    ' oninput="filterCompanies(\'' + key + '\', this.value, true)">';
+  const picked = (key, label) => '<select class="form-input filter-select" id="company-' + key + '" aria-label="' +
+    label + '" onchange="filterCompanies(\'' + key + '\', this.value)"><option value="">' + label + '</option></select>';
+  return '<div class="toolbar company-filters">' +
+    '<label class="search">' + icon('discover') +
+      '<input class="form-input" id="company-q" type="search" placeholder="Search name or domain" ' +
+      'aria-label="Search companies" oninput="filterCompanies(\'q\', this.value, true)"></label>' +
+    typed('location', 'Location', 'filter-text') +
+    picked('status', 'Any status') + picked('source', 'Any source') +
+    '<span class="fit-range" role="group" aria-label="Fit between">Fit ' +
+      typed('fit_min', '0', 'filter-num', 'number') + '<span aria-hidden="true">–</span>' +
+      typed('fit_max', '100', 'filter-num', 'number') + '</span>' +
+    '<button class="btn btn-ghost btn-sm" id="company-clear" onclick="clearCompanyFilters()" hidden>Clear filters</button>' +
+    '</div>';
+}
+
+// Every status and source, with how many companies have it. Rebuilt only
+// when they change, keeping what's picked.
+function companyFacets(facets) {
+  const sig = JSON.stringify(facets);
+  if (sig === _companyFacetSig) return;
+  _companyFacetSig = sig;
+  const fill = (key, label, items, name) => {
+    const select = document.getElementById('company-' + key);
+    if (!select) return;
+    const current = _companyFilters[key];
+    const known = items.some(([v]) => v === current);
+    select.innerHTML = '<option value="">' + label + '</option>' +
+      (current && !known ? '<option value="' + escHtml(current) + '">' + name(current) + ' (0)</option>' : '') +
+      items.map(([v, n]) => '<option value="' + escHtml(v) + '">' + name(v) + ' (' + n + ')</option>').join('');
+    select.value = current;
+  };
+  fill('status', 'Any status', facets.statuses || [], v => escHtml(v));
+  fill('source', 'Any source', facets.sources || [], v => sourceLabel(v) || 'Unknown');
+}
+
+// Typing filters once you pause, not on every keystroke.
+function filterCompanies(key, value, typed) {
+  _companyFilters[key] = value;
+  showClearFilters();
+  clearTimeout(_companyTimer);
+  const run = () => { _companyOffset = 0; loadCompanies(); };
+  if (typed) _companyTimer = setTimeout(run, 250); else run();
+}
+
+function clearCompanyFilters() {
+  for (const k of Object.keys(_companyFilters)) {
+    _companyFilters[k] = '';
+    const input = document.getElementById('company-' + k);
+    if (input) input.value = '';
+  }
+  showClearFilters();
+  _companyOffset = 0;
+  loadCompanies();
+}
+
+function showClearFilters() {
+  const button = document.getElementById('company-clear');
+  if (button) button.hidden = !Object.values(_companyFilters).some(v => String(v).trim() !== '');
+}
+
+function renderCompanyRows() {
+  const data = _companyPage;
+  const rows = document.getElementById('company-rows');
+  if (!data.items.length) {
+    rows.innerHTML = '<div class="card">' + emptyState(icon('companies'), 'No company matches these filters',
+      'Loosen a filter, or <a href="#" onclick="clearCompanyFilters();return false">clear them all</a>.') + '</div>';
+    return;
+  }
   const sort = (key, label, cls) => sortHeader(key, label, _companySort, 'sortCompaniesBy', cls);
   let html = '<div class="table-card"><table class="nowrap"><thead><tr>' +
     sort('name', 'Company') + sort('fit', 'Fit') +
@@ -2083,8 +2181,10 @@ async function loadCompanies() {
       ? '<a href="' + safeHref(website) + '" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">' +
         escHtml(c.domain || website.replace(/^https?:\/\//i, '')) + '</a>'
       : escHtml(c.domain);
+    const note = c.notes ? ' <span class="note-mark" title="' + escHtml(c.notes.slice(0, 300)) + '">' +
+      icon('pen') + '</span>' : '';
     html += '<tr class="clickable" onclick="showCompanyContacts(' + i + ')">' +
-      '<td><div class="cell-stack"><span class="cell-main">' + escHtml(c.name) + '</span>' +
+      '<td><div class="cell-stack"><span class="cell-main">' + escHtml(c.name) + note + '</span>' +
         '<span class="cell-sub">' + domain + '</span></div></td>' +
       '<td title="' + escHtml((c.fit_reasons || []).join(' · ')) + '">' +
         (typeof c.fit === 'number' ? meterHtml(c.fit) : '') + '</td>' +
@@ -2097,7 +2197,7 @@ async function loadCompanies() {
       '<td class="muted">' + relTime(c.created_at) + '</td></tr>';
   });
   const first = data.offset + 1, last = data.offset + _companies.length;
-  el.innerHTML = html + '</tbody></table></div>' +
+  rows.innerHTML = html + '</tbody></table></div>' +
     '<div class="table-foot">' + first + '–' + last + ' of ' + data.total +
       ' compan' + (data.total === 1 ? 'y' : 'ies') + pagerHtml(data, COMPANY_PAGE_SIZE, 'companyPage') + '</div>';
 }
@@ -2117,7 +2217,7 @@ function companyPage(step) {
 }
 
 // Basic facts about one company, above its contacts: where it came from,
-// why it fits, what's been done, and what Harvey saw on its own site.
+// why it fits, what's been done, what Harvey saw on its own site, and your notes.
 function companyInfoCard(company, profile) {
   const c = (profile && profile.company) || company;
   const reg = (profile && profile.register) || {};
@@ -2142,11 +2242,15 @@ function companyInfoCard(company, profile) {
   const shown = new Set(['DECISION_MAKER_TITLE', 'CONTACT_FOUND', 'CONTACT_FORM_URL', 'HIRING_ROLE', 'FOUND_IN_SERP', 'TECH_STACK']);
   const other = Object.values(latest).filter(o => !shown.has(o.signal_code));
   let html = '<div class="card" style="margin-bottom:16px"><div class="card-head"><h3>' + escHtml(c.name || c.domain) + '</h3>' +
-    '<span class="meta">' + (typeof company.fit === 'number' ? 'Fit ' + company.fit + ' / 100' : '') + '</span></div>' +
+    '<span class="meta">' + (typeof company.fit === 'number' ? 'Fit ' + company.fit + ' / 100' : '') + '</span>' +
+    '<button class="btn btn-secondary btn-sm" onclick="editCompany()">' + icon('pen') + 'Edit</button></div>' +
     '<table><tbody>' +
+    row('Notes', c.notes ? '<div class="company-notes">' + escHtml(c.notes) + '</div>' : '') +
     row('Website', link(website, c.domain || website)) +
     row('Sector', escHtml(c.industry)) +
     row('Area', escHtml(c.location)) +
+    row('Size', escHtml(c.company_size)) +
+    row('About', escHtml(c.description)) +
     row('Why selected', escHtml(reg.why_selected || (company.fit_reasons || []).join(' · '))) +
     row('Status', '<b>' + escHtml(reg.status || company.register_status || '') + '</b>' +
       (reg.why_not_contacted || company.register_why ? ' — ' + escHtml(reg.why_not_contacted || company.register_why) : '')) +
@@ -2162,6 +2266,59 @@ function companyInfoCard(company, profile) {
   return html;
 }
 
+// What can be changed on a company. Not its domain: Harvey knows it by it.
+const COMPANY_EDIT_FIELDS = [
+  ['name', 'Name'], ['website', 'Website'], ['industry', 'Sector'], ['location', 'Area'],
+  ['company_size', 'Size'], ['description', 'About', 3],
+  ['notes', 'Notes', 6, 'Calls, context, why not now: plain text, kept with the company. Every change is logged.'],
+];
+
+function editCompany() {
+  if (!_companyOpen) return;
+  const c = (_companyOpen.profile && _companyOpen.profile.company) || _companyOpen.company;
+  const field = ([key, label, rows, hint]) => '<div class="form-group"><label class="form-label" for="edit-' + key + '">' +
+    label + '</label>' + (rows
+      ? '<textarea class="form-input" id="edit-' + key + '" rows="' + rows + '"' +
+        (hint ? ' placeholder="' + escHtml(hint) + '"' : '') + '>' + escHtml(c[key] || '') + '</textarea>'
+      : '<input class="form-input" id="edit-' + key + '" value="' + escHtml(c[key] || '') + '">') + '</div>';
+  const of = key => field(COMPANY_EDIT_FIELDS.find(f => f[0] === key));
+  document.getElementById('company-card').innerHTML =
+    '<div class="card" style="margin-bottom:16px"><div class="card-head"><h3>Edit ' + escHtml(c.name || c.domain) + '</h3>' +
+      '<span class="meta">' + escHtml(c.domain || '') + '</span></div>' +
+    '<div class="company-edit">' + of('notes') +
+      '<div class="form-row">' + ['name', 'website', 'industry', 'location', 'company_size'].map(of).join('') + '</div>' +
+      of('description') +
+      '<div class="desk-actions"><button class="btn btn-primary" onclick="saveCompany()">Save</button>' +
+        '<button class="btn btn-secondary" onclick="renderCompanyCard()">Cancel</button>' +
+        '<span class="muted" style="font-size:12px;margin-left:auto">A name or website you change is kept: ' +
+        'Harvey\'s own clean-ups leave it alone.</span></div>' +
+    '</div></div>';
+  document.getElementById('edit-notes').focus();
+}
+
+async function saveCompany() {
+  if (!_companyOpen) return;
+  const id = _companyOpen.company.id;
+  const body = {};
+  for (const [key] of COMPANY_EDIT_FIELDS) body[key] = document.getElementById('edit-' + key).value;
+  const data = await api('/api/companies/' + encodeURIComponent(id), {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
+  });
+  if (!data || !data.success) { showToast(failMsg(data, 'Could not save.'), 'error'); return; }
+  showToast(data.changed && data.changed.length ? 'Saved.' : 'Nothing changed.', 'success');
+  const profile = await api('/api/companies/' + encodeURIComponent(id) + '/profile');
+  if (_companyOpen && _companyOpen.company.id === id && profile && !profile.error) {
+    _companyOpen.profile = profile;
+    Object.assign(_companyOpen.company, profile.company);
+  }
+  renderCompanyCard();
+}
+
+function renderCompanyCard() {
+  const card = document.getElementById('company-card');
+  if (card && _companyOpen) card.innerHTML = companyInfoCard(_companyOpen.company, _companyOpen.profile);
+}
+
 async function showCompanyContacts(index) {
   const company = _companies[index];
   if (!company) return;
@@ -2172,8 +2329,9 @@ async function showCompanyContacts(index) {
     api('/api/companies/' + encodeURIComponent(company.id) + '/profile'),
   ]);
   _companySig = '';   // coming back re-renders the list it replaces
+  _companyOpen = {company, profile};
   let html = '<button class="btn btn-ghost btn-sm" onclick="loadCompanies()" style="margin-bottom:12px">' +
-    '&larr; All companies</button>' + companyInfoCard(company, profile) +
+    '&larr; All companies</button><div id="company-card">' + companyInfoCard(company, profile) + '</div>' +
     '<div class="card flush"><div class="card-head"><h3>Contacts</h3>' +
     '<span class="meta">' + escHtml([company.industry, company.location].filter(Boolean).join(' · ')) + '</span></div>';
   if (!data || !data.length) {

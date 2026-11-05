@@ -1048,3 +1048,15 @@ table.clip td { max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
 .warmup-actions { margin-top: var(--sp-2); align-items: center; }
 a.btn, a.btn:hover { text-decoration: none; }
 .warmup-actions .form-input { flex: 1 1 200px; height: 28px; min-width: 0; }
+
+/* ── Companies: filters, notes, editing ─────────────────────────── */
+
+.company-filters .filter-text { width: 160px; }
+.company-filters .filter-select { width: auto; min-width: 140px; max-width: 220px; padding-right: 8px; }
+.fit-range { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-caption); color: var(--text-2); }
+.fit-range .filter-num { width: 68px; }
+.note-mark .icon { width: 13px; height: 13px; color: var(--text-3); vertical-align: -2px; }
+.company-notes { white-space: pre-wrap; overflow-wrap: anywhere; }
+.company-edit { margin-top: var(--sp-4); }
+.company-edit textarea.form-input { resize: vertical; line-height: 1.5; }
+.company-filters [hidden] { display: none; }
