@@ -12,8 +12,10 @@ import subprocess
 import sys
 import tempfile
 import uuid
+from collections import Counter
 from datetime import date, datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import aiosqlite
 import yaml
@@ -519,26 +521,93 @@ async def test_instantly(request: Request):
 
 
 @app.get("/api/companies")
-async def get_companies(sort: str = "added", dir: str = "desc", offset: int = 0, limit: int = 50):
+async def get_companies(sort: str = "added", dir: str = "desc", offset: int = 0, limit: int = 50,
+                        q: str = "", source: str = "", location: str = "", status: str = "",
+                        fit_min: int | None = None, fit_max: int | None = None):
     """One page of companies with their contact counts, fit score and
-    register status. Sorted and paged in the database, except by fit, which
-    only the register works out."""
+    register status, filtered by name or domain, location, source, status
+    and a fit range. Sorted and paged in the database, except by fit, which
+    only the register works out; so are the status and fit filters, which
+    then narrow the database's query to the companies they keep.
+    ``facets`` lists every source and status, with counts, for the filters."""
     try:
         state = _state()
         await state.init_db()
         register = await _register_by_id()
+        ids = None
+        if register and (status or fit_min is not None or fit_max is not None):
+            low, high = fit_min if fit_min is not None else 0, fit_max if fit_max is not None else 100
+            ids = [cid for cid, r in register.items()
+                   if (not status or r["status"] == status) and low <= r["fit"] <= high]
         if sort == "fit" and register:
-            page = await _companies_by_fit(register, dir, offset, limit)
+            kept = set(await state.company_ids(q=q, source=source, location=location, ids=ids))
+            page = await _companies_by_fit({k: v for k, v in register.items() if k in kept},
+                                           dir, offset, limit)
         else:
-            page = await state.companies_page(sort=sort, direction=dir, offset=offset, limit=limit)
+            page = await state.companies_page(sort=sort, direction=dir, offset=offset, limit=limit,
+                                              q=q, source=source, location=location, ids=ids)
         for c in page["items"]:
             r = register.get(c["id"])
             if r:
                 c["fit"], c["fit_reasons"] = r["fit"], r["fit_reasons"]
                 c["register_status"], c["register_why"] = r["status"], r["why_not_contacted"]
+        page["facets"] = {
+            "statuses": sorted(Counter(r["status"] for r in register.values()).items()),
+            "sources": [(r["source"], r["n"]) for r in await query_db(
+                "SELECT COALESCE(source, '') AS source, COUNT(*) AS n FROM companies "
+                "GROUP BY 1 ORDER BY 1")],
+        }
         return page
     except Exception as e:
         return {"error": str(e)}
+
+
+# What a company edit may hold, and how long each field may be.
+COMPANY_FIELD_LIMITS = {"name": 200, "website": 500, "industry": 200, "location": 200,
+                        "company_size": 100, "description": 2000, "notes": 10000}
+
+
+@app.post("/api/companies/{company_id}")
+async def edit_company(company_id: str, request: Request):
+    """Change a company's details or notes. Only the fields sent change; every
+    change is logged with what it replaced, so the notes keep a trail."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict):
+        return _refuse("Send the fields to change as a JSON object.", 400)
+    changes = {}
+    for field, cap in COMPANY_FIELD_LIMITS.items():
+        if field not in body:
+            continue
+        value = body[field]
+        if not isinstance(value, str):
+            return _refuse(f"{field} must be text.", 400)
+        value = value.strip() if field != "notes" else value.rstrip()
+        if len(value) > cap:
+            return _refuse(f"{field} is {len(value):,} characters; the limit is {cap:,}.", 400)
+        changes[field] = value
+    if "name" in changes and not changes["name"]:
+        return _refuse("A company needs a name.", 400)
+    site = urlsplit(changes.get("website") or "")
+    if changes.get("website") and (site.scheme not in ("http", "https") or not site.netloc):
+        return _refuse("The website must start with http:// or https://.", 400)
+    try:
+        state = _state()
+        await state.init_db()
+        diff = await state.edit_company(company_id, changes)
+        if diff is None:
+            return JSONResponse({"success": False, "message": "No such company."}, status_code=404)
+        if diff:
+            name = (await query_db("SELECT name FROM companies WHERE id = ?", (company_id,)))[0]["name"]
+            await state.log_action("company_edited", "dashboard", {
+                "company_id": company_id, "company": name,
+                "changes": {k: {"old": old, "new": new} for k, (old, new) in diff.items()},
+            })
+        return {"success": True, "changed": sorted(diff)}
+    except Exception as e:
+        return JSONResponse({"success": False, "message": str(e)}, status_code=500)
 
 
 async def _register_by_id() -> dict:

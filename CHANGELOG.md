@@ -9,6 +9,18 @@ minor versions can still change behaviour.
 
 ### Added
 
+- **Companies: filters, editing and notes.** The tab filters by name or
+  domain (case and accents ignored), location, source, status and a fit
+  range, on top of its sort and pages; each menu shows how many companies
+  have each value. A company's card has *Edit*: its name, website, sector,
+  area, size and description, and **notes**, plain text kept with the
+  company for the record (a pencil marks the rows that have some). Every
+  change is logged with what it replaced and shows on Activity. A name or
+  website corrected by hand is kept: automatic renaming and the start-up
+  clean-ups leave it alone (`companies.hand_edited`). The domain isn't
+  editable, as discovery dedups on it. `POST /api/companies/{id}` takes
+  the fields to change; `/api/companies` takes `q`, `location`, `source`,
+  `status`, `fit_min` and `fit_max`, and returns `facets`.
 - **Rule out job boards, recruiters and media sites.** `icp.exclude_kinds:
   [job_boards, recruiters, media]` recognises each kind by how its homepage
   describes itself, in English and French ("job portal", "offres d'emploi",
