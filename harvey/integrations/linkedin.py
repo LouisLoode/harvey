@@ -34,6 +34,17 @@ MAX_DAILY_SEARCH_PAGES = 20
 MAX_DAILY_PROFILE_VIEWS = 40
 MAX_SEARCH_PAGES_PER_QUERY = 5
 
+# The sign-in form's fields, newest markup first. LinkedIn's login page now
+# gives its inputs generated ids, so they're found by what they are
+# (autocomplete), and only a visible one counts: the page renders the form
+# twice, one copy hidden.
+USERNAME_FIELDS = ('input[autocomplete~="username"]', "#username", 'input[name="session_key"]')
+PASSWORD_FIELDS = ('input[type="password"][autocomplete~="current-password"]', "#password",
+                   'input[name="session_password"]')
+FORM_TIMEOUT_MS = 15000
+# How long `harvey linkedin login` waits for you to finish signing in.
+MANUAL_LOGIN_TIMEOUT_S = 300
+
 
 class LinkedInAutomation:
     def __init__(self, email: str, password: str):
@@ -122,12 +133,12 @@ class LinkedInAutomation:
 
     # ── Lifecycle ──
 
-    async def start(self):
+    async def start(self, headless: bool = True):
         """Launch browser and set up context."""
         from playwright.async_api import async_playwright
 
         self._pw = await async_playwright().start()
-        self.browser = await self._pw.chromium.launch(headless=True)
+        self.browser = await self._pw.chromium.launch(headless=headless)
 
         # Always use the same fingerprint (viewport + UA), whether or not
         # we have saved cookies — a changing fingerprint is a red flag.
@@ -212,12 +223,27 @@ class LinkedInAutomation:
             logger.info("Already logged into LinkedIn.")
             return True
 
+        username = await self._visible_field(USERNAME_FIELDS)
+        if username is None:
+            logger.warning(
+                "LinkedIn's sign-in form wasn't found: the page changed or asks for a "
+                "check first. Sign in once yourself with `harvey linkedin login`; "
+                "Harvey keeps that session."
+            )
+            return False
+
         try:
-            await self.page.fill("#username", self.email)
+            await username.fill(self.email)
             await self._random_delay(0.5, 1.5)
-            await self.page.fill("#password", self.password)
+            password = await self._visible_field(PASSWORD_FIELDS, timeout=5000)
+            if password is None:
+                logger.warning("LinkedIn's password field wasn't found. Sign in once "
+                               "yourself with `harvey linkedin login`.")
+                return False
+            await password.fill(self.password)
             await self._random_delay(0.5, 1.5)
-            await self.page.click('button[type="submit"]')
+            # Enter submits whatever the button looks like this month.
+            await password.press("Enter")
             await self._wait_settled()
 
             if "feed" in self.page.url or "mynetwork" in self.page.url:
@@ -230,8 +256,8 @@ class LinkedInAutomation:
             # Check for security challenge
             if "checkpoint" in self.page.url or "challenge" in self.page.url:
                 logger.warning(
-                    "LinkedIn security checkpoint detected. "
-                    "Please log in manually and save cookies."
+                    "LinkedIn asked for a security check. Sign in once yourself "
+                    "with `harvey linkedin login`; Harvey keeps that session."
                 )
                 return False
 
@@ -243,6 +269,54 @@ class LinkedInAutomation:
             msg = str(e).replace(self.password, "***") if self.password else str(e)
             logger.error(f"LinkedIn login failed: {msg}")
             return False
+
+    async def _visible_field(self, selectors, timeout: int | None = None):
+        """The first visible field any of the selectors finds, or None after
+        ``timeout`` ms (FORM_TIMEOUT_MS by default)."""
+        field = self.page.locator(", ".join(f"{s}:visible" for s in selectors)).first
+        try:
+            await field.wait_for(state="visible",
+                                 timeout=FORM_TIMEOUT_MS if timeout is None else timeout)
+        except Exception:
+            return None
+        return field
+
+    async def interactive_login(self, timeout_s: int = MANUAL_LOGIN_TIMEOUT_S) -> bool:
+        """Open a visible browser on LinkedIn's sign-in page and wait while the
+        operator signs in themselves (any check or code included); then keep
+        the session cookies, so Harvey's headless runs start signed in and
+        never type the password. Returns whether the sign-in finished."""
+        await self.start(headless=False)
+        try:
+            await self.page.goto("https://www.linkedin.com/login", timeout=30000)
+        except Exception as e:
+            logger.error(f"Could not load LinkedIn login page: {e}")
+            return False
+        for _ in range(int(timeout_s)):
+            try:
+                cookies = await self.context.cookies()
+                url = self.page.url
+            except Exception:
+                return False                     # the window was closed
+            if any(c.get("name") == "li_at" for c in cookies) and (
+                    "/feed" in url or "/mynetwork" in url):
+                self._save_cookies_sync(cookies)
+                return True
+            await asyncio.sleep(1)
+        return False
+
+    @staticmethod
+    def session_expires() -> Optional[float]:
+        """When the saved signed-in session (LinkedIn's li_at cookie) expires,
+        as a Unix time; None when there is none."""
+        try:
+            cookies = json.loads(COOKIES_PATH.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        for c in cookies if isinstance(cookies, list) else []:
+            if isinstance(c, dict) and c.get("name") == "li_at":
+                return float(c.get("expires") or 0) or None
+        return None
 
     # ── Search ──
 

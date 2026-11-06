@@ -879,6 +879,41 @@ def _warmup_service_check(address: str, warmup):
     return asyncio.run(_run())
 
 
+def cmd_linkedin(args):
+    """Sign in to LinkedIn yourself, once, so Harvey keeps the session; or show it."""
+    from datetime import datetime
+
+    from harvey.integrations.linkedin import COOKIES_PATH, LinkedInAutomation
+
+    if args.linkedin_action == "status":
+        expires = LinkedInAutomation.session_expires()
+        if expires:
+            print(f"\n  LinkedIn: signed in; the session lasts until "
+                  f"{datetime.fromtimestamp(expires):%Y-%m-%d}.\n")
+        else:
+            print("\n  LinkedIn: no saved session. Run `harvey linkedin login` to sign in "
+                  "once yourself.\n")
+        return
+
+    print("\n  A Chromium window opens on LinkedIn's sign-in page. Sign in as you usually")
+    print("  do, including any code or check LinkedIn asks for. Harvey keeps the session")
+    print(f"  in {COOKIES_PATH} (owner-only) and never needs your password for it.")
+    print("  You have 5 minutes.\n")
+
+    async def _run():
+        linkedin = LinkedInAutomation("", "")
+        try:
+            return await linkedin.interactive_login()
+        finally:
+            await linkedin.stop()
+
+    if asyncio.run(_run()):
+        print("  Signed in. Harvey's LinkedIn searches start from this session.\n")
+    else:
+        print("  Not signed in (the window was closed or 5 minutes passed). Nothing changed.\n")
+        sys.exit(1)
+
+
 def cmd_trulyinbox(args):
     """Connect TrulyInbox, record another warmup service, or show the status."""
     import getpass
@@ -1144,6 +1179,13 @@ def main():
                      help="connect a key, 'other' if you use another warmup service, "
                           "or show the status (default)")
     sub.set_defaults(func=cmd_trulyinbox)
+
+    # harvey linkedin
+    sub = subparsers.add_parser(
+        "linkedin", help="Sign in to LinkedIn yourself once, so prospecting keeps the session")
+    sub.add_argument("linkedin_action", nargs="?", default="status", choices=["status", "login"],
+                     help="login: open a browser to sign in; status (default): show the session")
+    sub.set_defaults(func=cmd_linkedin)
 
     # harvey usage
     sub = subparsers.add_parser("usage", help="Show brain usage and quota (Claude or Codex)")
