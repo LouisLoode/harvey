@@ -348,6 +348,7 @@ harvey discover              # Find businesses; --providers / --estimate / --pro
 harvey sending pause|resume  # Kill switch for all outbound
 harvey warmup [domain]       # Sending-domain readiness: SPF/DKIM/DMARC, age, blocklists, ramp, TrulyInbox warmup
 harvey trulyinbox [connect|other]  # Warmup service: connect TrulyInbox, or record another service
+harvey linkedin [login]      # LinkedIn session: sign in once yourself in a browser window; Harvey keeps it
 ```
 
 ### Common Issues

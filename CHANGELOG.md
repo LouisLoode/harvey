@@ -490,6 +490,17 @@ minor versions can still change behaviour.
 
 ### Fixed
 
+- **LinkedIn sign-in stopped finding the form.** LinkedIn's login page now
+  gives its inputs generated ids and renders the form twice, one copy
+  hidden, so waiting for `#username` timed out after 30 seconds every
+  cycle. The fields are now found by what they are (`autocomplete`
+  username / current-password, visible only), the form is sent with Enter
+  whatever its button looks like, and a page with no form gives up in 15
+  seconds with what to do. The page also carries reCAPTCHA, so a sign-in
+  can still stop at a check: `harvey linkedin login` opens a real browser
+  window to sign in once yourself (any code included), and Harvey keeps
+  that session instead of typing the password. `harvey linkedin` shows
+  until when the session lasts.
 - **A throttled TrulyInbox warmup read as switched off.** When too much
   warmup mail lands in spam, TrulyInbox slows the warmup and reports it as
   `THROTTLED`. `harvey warmup` said "Warmup isn't on. Turn it on in
