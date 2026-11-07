@@ -1,7 +1,8 @@
-"""Tests for the optional Precleared step in `harvey setup`: off unless the
-user says yes, saved answers are the defaults when setup is re-run, the key is
-read with hidden input and never printed, and other settings are kept. No
-network: the step only writes harvey.yaml and .env."""
+"""Tests for the optional Precleared step in `sellbird setup`: off unless the
+user says yes, saved answers are the defaults when setup is re-run, a free key
+can be had for an email address, a pasted key is read with hidden input, no
+key is ever printed, and other settings are kept. No network: the free-key
+request is replaced in every test."""
 
 import os
 import shutil
@@ -10,19 +11,41 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-import harvey.setup as setup
-from harvey.config import load_config
-from harvey.integrations.precleared import PreclearedClient
-from harvey.paths import PROJECT_ROOT
+import sellbird.setup as setup
+from sellbird.config import load_config
+from sellbird.integrations.precleared import NewKey, PreclearedClient
+from sellbird.paths import PROJECT_ROOT
 
 FAKE_KEY = "pc_live_example_not_a_real_key"
 
 
+@pytest.fixture(autouse=True)
+def no_network(monkeypatch):
+    """Fail any test that would ask Precleared for a real key."""
+    def refuse(*args, **kwargs):
+        raise AssertionError("setup tried to reach Precleared")
+
+    monkeypatch.setattr(setup, "create_free_key", refuse)
+
+
+def free_key(monkeypatch, *results):
+    """Precleared's answers to free-key requests, in order. Returns the calls."""
+    calls = []
+    answers = list(results)
+
+    def create(email, country=""):
+        calls.append((email, country))
+        return answers.pop(0)
+
+    monkeypatch.setattr(setup, "create_free_key", create)
+    return calls
+
+
 @pytest.fixture
 def files(tmp_path, monkeypatch):
-    """A copy of the shipped harvey.yaml and an empty .env, in a temp folder."""
-    config = tmp_path / "harvey.yaml"
-    shutil.copy(PROJECT_ROOT / "harvey.yaml", config)
+    """A copy of the shipped sellbird.yaml and an empty .env, in a temp folder."""
+    config = tmp_path / "sellbird.yaml"
+    shutil.copy(PROJECT_ROOT / "sellbird.yaml", config)
     env = tmp_path / ".env"
     monkeypatch.setattr(setup, "CONFIG_FILE", config)
     monkeypatch.setattr(setup, "ENV_FILE", env)
@@ -63,7 +86,7 @@ def saved(path) -> dict:
 
 
 def finish(wizard):
-    """Write .env and harvey.yaml the way the end of `harvey setup` does."""
+    """Write .env and sellbird.yaml the way the end of `sellbird setup` does."""
     if not wizard.config:
         wizard.config = {"channels": {"email": {"max_daily_sends": 50}}}
     wizard._write_env()
@@ -84,7 +107,7 @@ def test_check_stays_off_unless_the_user_says_yes(files, monkeypatch):
 
 
 def test_yes_saves_the_settings_and_a_free_key(files, monkeypatch, capsys):
-    asked = script(monkeypatch, yes_no=[True], answers=["uk", "us", FAKE_KEY])
+    asked = script(monkeypatch, yes_no=[True, False], answers=["uk", "us", FAKE_KEY])
     wizard = setup.SetupWizard()
     wizard._setup_compliance()
     finish(wizard)
@@ -119,6 +142,7 @@ def test_rerunning_setup_keeps_a_check_that_is_on(files, monkeypatch):
     assert [q.default for q in asked.questions[:2]] == ["GB", "US"]
     assert "blank to skip" not in asked.questions[0].prompt  # Enter keeps GB
     assert "Enter keeps your current key" in asked.questions[2].prompt
+    assert len(asked.yes_no) == 1  # no free key offered over a saved one
     assert saved(files.config)["enabled"] is True
     assert saved(files.config)["prospect_country"] == "US"
     assert "PRECLEARED_API_KEY=existing_key" in files.env.read_text().splitlines()
@@ -149,7 +173,7 @@ def test_sender_country_must_be_gb_or_us_and_blank_skips(files, monkeypatch, cap
 
 def test_prospect_country_is_checked_and_norway_stays_a_string(files, monkeypatch, capsys):
     # "no" is also Norway's code, so it's confirmed before being saved.
-    script(monkeypatch, yes_no=[True, True], answers=["GB", "Norway", "no", ""])
+    script(monkeypatch, yes_no=[True, True, False], answers=["GB", "Norway", "no", ""])
     wizard = setup.SetupWizard()
     wizard._setup_compliance()
     finish(wizard)
@@ -163,7 +187,7 @@ def test_prospect_country_is_checked_and_norway_stays_a_string(files, monkeypatc
 def test_answering_no_to_the_prospect_country_does_not_pick_norway(files, monkeypatch):
     # The question reads "if they're all in one", so "no" usually means "they
     # aren't". Saving it as NO would tell Precleared they're all in Norway.
-    asked = script(monkeypatch, yes_no=[True, None], answers=["US", "no", ""])
+    asked = script(monkeypatch, yes_no=[True, None, False], answers=["US", "no", ""])
     wizard = setup.SetupWizard()
     wizard._setup_compliance()
     finish(wizard)
@@ -175,7 +199,7 @@ def test_answering_no_to_the_prospect_country_does_not_pick_norway(files, monkey
 
 def test_none_clears_a_saved_prospect_country(files, monkeypatch):
     set_precleared(files.config, enabled=True, sender_country="GB", prospect_country="US")
-    asked = script(monkeypatch, yes_no=[None], answers=["", "none", ""])
+    asked = script(monkeypatch, yes_no=[None, False], answers=["", "none", ""])
     wizard = setup.SetupWizard()
     wizard._setup_compliance()
     finish(wizard)
@@ -188,7 +212,7 @@ def test_none_clears_a_saved_prospect_country(files, monkeypatch):
 @pytest.mark.parametrize("env_text", ["", 'PRECLEARED_API_KEY=""\n'])
 def test_turning_it_on_without_a_key_leaves_a_placeholder(files, monkeypatch, capsys, env_text):
     files.env.write_text(env_text)
-    asked = script(monkeypatch, yes_no=[True], answers=["US", "", ""])
+    asked = script(monkeypatch, yes_no=[True, False], answers=["US", "", ""])
     wizard = setup.SetupWizard()
     wizard._setup_compliance()
     finish(wizard)
@@ -201,11 +225,11 @@ def test_turning_it_on_without_a_key_leaves_a_placeholder(files, monkeypatch, ca
 
 
 def test_a_new_config_file_gets_the_check(tmp_path, monkeypatch):
-    config = tmp_path / "harvey.yaml"  # not created yet
+    config = tmp_path / "sellbird.yaml"  # not created yet
     monkeypatch.setattr(setup, "CONFIG_FILE", config)
     monkeypatch.setattr(setup, "ENV_FILE", tmp_path / ".env")
     monkeypatch.delenv("PRECLEARED_API_KEY", raising=False)
-    script(monkeypatch, yes_no=[True], answers=["GB", "", ""])
+    script(monkeypatch, yes_no=[True, False], answers=["GB", "", ""])
     wizard = setup.SetupWizard()
     wizard._setup_compliance()
     finish(wizard)
@@ -246,7 +270,7 @@ def test_saving_the_key_keeps_other_env_lines_and_stays_private(files, monkeypat
              "HUNTER_API_KEY='single'\n"
              'SERPER_API_KEY=abc#def')  # no trailing newline
     files.env.write_text(other)
-    script(monkeypatch, yes_no=[True], answers=["US", "", FAKE_KEY])
+    script(monkeypatch, yes_no=[True, False], answers=["US", "", FAKE_KEY])
     wizard = setup.SetupWizard()
     caplog.set_level("DEBUG")
     wizard._setup_compliance()
@@ -262,20 +286,89 @@ def test_saving_the_key_keeps_other_env_lines_and_stays_private(files, monkeypat
     assert FAKE_KEY not in caplog.text
 
 
-# ── setup saves to the file Harvey reads, and says when it couldn't ──
+# ── a free key for an email address ──
+
+OFFER = "Get a free Precleared key now? It only needs your email address"
+
+
+def test_setup_gets_a_free_key_for_an_email_address(files, monkeypatch, capsys, caplog):
+    calls = free_key(monkeypatch, NewKey(key=FAKE_KEY))
+    asked = script(monkeypatch, yes_no=[True, None], answers=["GB", "", "jo@example.com"])
+    wizard = setup.SetupWizard()
+    caplog.set_level("DEBUG")
+    wizard._setup_compliance()
+    finish(wizard)
+
+    assert asked.yes_no[1] == (OFFER, True)  # Enter means yes
+    email_question = asked.questions[-1]
+    assert "Email address" in email_question.prompt and email_question.secret is False
+    assert len(asked.questions) == 3  # no paste question once the key came back
+    assert calls == [("jo@example.com", "GB")]
+    assert f"PRECLEARED_API_KEY={FAKE_KEY}" in files.env.read_text().splitlines()
+    out = capsys.readouterr().out
+    assert "100 a day for its first 14 days" in out
+    assert "precleared.dev/privacy" in out
+    assert "Got your free key and saved it to .env." in out
+    assert FAKE_KEY not in out
+    assert FAKE_KEY not in caplog.text
+
+
+def test_a_key_precleared_cannot_make_falls_back_to_pasting_one(files, monkeypatch, capsys):
+    calls = free_key(monkeypatch, NewKey(error="This email address already has three keys"))
+    asked = script(monkeypatch, yes_no=[True, True], answers=["US", "", "jo@example.com", FAKE_KEY])
+    wizard = setup.SetupWizard()
+    wizard._setup_compliance()
+    finish(wizard)
+
+    assert len(calls) == 1
+    out = capsys.readouterr().out
+    assert "Couldn't get a key: This email address already has three keys." in out
+    assert "paste one from https://precleared.dev/get-key" in out
+    paste = asked.questions[-1]
+    assert paste.secret is True and "Enter to skip" in paste.prompt
+    assert f"PRECLEARED_API_KEY={FAKE_KEY}" in files.env.read_text().splitlines()
+
+
+def test_a_mistyped_address_is_asked_for_again(files, monkeypatch, capsys):
+    calls = free_key(monkeypatch,
+                     NewKey(error="that doesn't look like an email address", bad_email=True),
+                     NewKey(key=FAKE_KEY))
+    script(monkeypatch, yes_no=[True, True], answers=["GB", "", "jo-at-example.com", "jo@example.com"])
+    wizard = setup.SetupWizard()
+    wizard._setup_compliance()
+    finish(wizard)
+
+    assert [email for email, _ in calls] == ["jo-at-example.com", "jo@example.com"]
+    assert "paste one" not in capsys.readouterr().out
+    assert f"PRECLEARED_API_KEY={FAKE_KEY}" in files.env.read_text().splitlines()
+
+
+def test_a_blank_address_skips_to_pasting_a_key(files, monkeypatch, capsys):
+    # The no_network guard fails the test if Precleared is asked.
+    asked = script(monkeypatch, yes_no=[True, True], answers=["GB", "", "", ""])
+    wizard = setup.SetupWizard()
+    wizard._setup_compliance()
+    finish(wizard)
+
+    assert asked.questions[-1].secret is True  # the paste question came next
+    assert "sellbird precleared-key" in capsys.readouterr().out
+    assert saved(files.config)["enabled"] is True
+
+
+# ── setup saves to the file Sellbird reads, and says when it couldn't ──
 
 @pytest.fixture
 def trained(files):
-    """`harvey train` wrote harvey.local.yaml, which wins over harvey.yaml."""
-    local = files.config.with_name("harvey.local.yaml")
+    """`sellbird train` wrote sellbird.local.yaml, which wins over sellbird.yaml."""
+    local = files.config.with_name("sellbird.local.yaml")
     shutil.copy(files.config, local)
     files.local = local
     files.template = files.config.read_bytes()
     return files
 
 
-def test_after_harvey_train_setup_saves_to_harvey_local_yaml(trained, monkeypatch):
-    script(monkeypatch, yes_no=[True], answers=["GB", "", ""])
+def test_after_sellbird_train_setup_saves_to_sellbird_local_yaml(trained, monkeypatch):
+    script(monkeypatch, yes_no=[True, False], answers=["GB", "", ""])
     wizard = setup.SetupWizard()
     wizard._setup_compliance()
     finish(wizard)
@@ -284,9 +377,9 @@ def test_after_harvey_train_setup_saves_to_harvey_local_yaml(trained, monkeypatc
     assert trained.config.read_bytes() == trained.template  # template untouched
 
 
-def test_rerunning_setup_after_harvey_train_offers_the_saved_answers(trained, monkeypatch):
+def test_rerunning_setup_after_sellbird_train_offers_the_saved_answers(trained, monkeypatch):
     set_precleared(trained.local, enabled=True, sender_country="US")
-    asked = script(monkeypatch, yes_no=[None], answers=["", "", ""])
+    asked = script(monkeypatch, yes_no=[None, False], answers=["", "", ""])
     wizard = setup.SetupWizard()
     wizard._setup_compliance()
 
@@ -296,9 +389,9 @@ def test_rerunning_setup_after_harvey_train_offers_the_saved_answers(trained, mo
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("has_local", [False, True])
-async def test_setup_trains_into_the_file_harvey_reads(files, monkeypatch, has_local):
+async def test_setup_trains_into_the_file_sellbird_reads(files, monkeypatch, has_local):
     if has_local:
-        shutil.copy(files.config, files.config.with_name("harvey.local.yaml"))
+        shutil.copy(files.config, files.config.with_name("sellbird.local.yaml"))
     outputs = []
 
     class FakeTrainer:
@@ -309,11 +402,11 @@ async def test_setup_trains_into_the_file_harvey_reads(files, monkeypatch, has_l
             outputs.append(output_path)
             return {"persona": {}}
 
-    monkeypatch.setattr("harvey.trainer.Trainer", FakeTrainer)
+    monkeypatch.setattr("sellbird.trainer.Trainer", FakeTrainer)
     script(monkeypatch, yes_no=[], answers=["url", "https://example.test"])
     await setup.SetupWizard()._setup_product()
 
-    name = "harvey.local.yaml" if has_local else "harvey.yaml"
+    name = "sellbird.local.yaml" if has_local else "sellbird.yaml"
     assert outputs == [str(files.config.with_name(name))]
 
 
@@ -327,7 +420,7 @@ async def summary(wizard, monkeypatch, capsys) -> str:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("turn_on", [True, False])
 async def test_summary_shows_whether_the_check_was_saved_on(files, monkeypatch, capsys, turn_on):
-    script(monkeypatch, yes_no=[turn_on], answers=["GB", "", ""])
+    script(monkeypatch, yes_no=[turn_on, False], answers=["GB", "", ""])
     wizard = setup.SetupWizard()
     wizard._setup_compliance()
     finish(wizard)
@@ -340,7 +433,7 @@ async def test_summary_shows_whether_the_check_was_saved_on(files, monkeypatch, 
 @pytest.mark.asyncio
 async def test_a_config_that_cannot_be_saved_is_reported_not_ticked(files, monkeypatch, capsys):
     files.config.write_text("channels:\n")  # hand-edited: an empty channels section
-    script(monkeypatch, yes_no=[True], answers=["GB", "", ""])
+    script(monkeypatch, yes_no=[True, False], answers=["GB", "", ""])
     wizard = setup.SetupWizard()
     wizard._setup_compliance()
     wizard.config = {"channels": {"email": {"max_daily_sends": 50}}}

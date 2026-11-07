@@ -9,8 +9,8 @@ import sqlite3
 import pytest
 from fastapi.testclient import TestClient
 
-import harvey.dashboard as dash
-from harvey.state import StateManager
+import sellbird.dashboard as dash
+from sellbird.state import StateManager
 
 ORIGIN = "http://127.0.0.1:5555"
 STEPS = [{"step": 1, "subject": "hi", "body": "Hi {{company}}", "delay_days": 0},
@@ -28,10 +28,10 @@ FIRST_EMAILS = [("c1", "p0", "pending_review"), ("c1", "p1", "pending_review"),
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     (tmp_path / "data").mkdir()
-    db = tmp_path / "data" / "harvey.db"
+    db = tmp_path / "data" / "sellbird.db"
     monkeypatch.setattr(dash, "ENV_FILE", tmp_path / ".env")
     monkeypatch.setattr(dash, "DB_PATH", db)
-    monkeypatch.setattr(dash, "_harvey_can_send", lambda: True)
+    monkeypatch.setattr(dash, "_sellbird_can_send", lambda: True)
     dash.token_store.configure(tmp_path / "data" / "dashboard-token")
     state = StateManager(db_path=str(db))
 

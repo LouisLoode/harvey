@@ -9,14 +9,14 @@ from types import SimpleNamespace
 import pytest
 import pytest_asyncio
 
-from harvey.agents.handler import _opt_out_reason
-from harvey.agents.writer import Writer
-from harvey.config import ComplianceConfig, compliance_footer_lines, load_config
-from harvey.language import company_language, text_language
-from harvey.models.company import Company
-from harvey.models.prospect import Prospect
-from harvey.signals import seed_signal_catalog
-from harvey.state import StateManager
+from sellbird.agents.handler import _opt_out_reason
+from sellbird.agents.writer import Writer
+from sellbird.config import ComplianceConfig, compliance_footer_lines, load_config
+from sellbird.language import company_language, text_language
+from sellbird.models.company import Company
+from sellbird.models.prospect import Prospect
+from sellbird.signals import seed_signal_catalog
+from sellbird.state import StateManager
 
 
 def _config(language="auto"):

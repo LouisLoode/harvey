@@ -1,6 +1,6 @@
 # Changelog
 
-Notable changes to Harvey. Dates are release dates; the format follows
+Notable changes to Sellbird, called Harvey until 0.4.0. Dates are release dates; the format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) loosely and versions
 follow [semver](https://semver.org/), with the caveat that Harvey is pre-1.0 and
 minor versions can still change behaviour.
@@ -20,7 +20,7 @@ minor versions can still change behaviour.
   The town is kept only when the company's record and its head office are
   both public, and never the street or postal code: a sole trader's head
   office is often their home. No extra request. To fill companies already
-  profiled, run `harvey profile --stale-days 0` (with a `--limit` above your
+  profiled, run `sellbird profile --stale-days 0` (with a `--limit` above your
   company count).
 
 - **Companies: filters, editing and notes.** The tab filters by name or
@@ -109,7 +109,7 @@ minor versions can still change behaviour.
   Batches split by language, the footer uses `compliance.opt_out_line_fr`,
   and French opt-outs ("non merci", "désinscription") are honoured.
 - **Quiet hours on chosen days.** `usage.quiet_hours.days` (every day by
-  default). Quiet 08:00-20:00 on `[mon, tue, wed, thu, fri]` keeps Harvey's
+  default). Quiet 08:00-20:00 on `[mon, tue, wed, thu, fri]` keeps Sellbird's
   work, and its Claude use, to nights and weekends.
 
 - **French startups.** `icp.search_languages: [fr]` makes the `funding` and
@@ -123,7 +123,52 @@ minor versions can still change behaviour.
   are filtered as junk. Defaults to `[en]`, so nothing changes unless set.
 
 - **Company fit and the company register.** The Companies tab now shows a
-  0-100 fit score (click Fit to sort by it), worked out from what Harvey already holds: the ICP sector
+  0-100 fit score (click Fit to sort by it), worked out from what Sellbird already holds: the ICP sector
+
+- **A free Precleared key in one step** (from #121 by @gabrielaoimevbore-beep).
+  `sellbird setup` now offers to get a free key for the cold-email check with
+  just an email address, instead of sending people to a web page and back, and
+  `sellbird precleared-key` does the same later (`--email` asks nothing, for a
+  coding agent setting Sellbird up). The key is saved in `.env` as
+  `PRECLEARED_API_KEY` and never printed. When the keyless allowance (10 checks
+  a day) runs out, the Today page, `sellbird status` and the Outbox reason point
+  to the command. Free keys now give 100 checks a day for their first 14 days,
+  then 25, and the docs say so.
+
+## [0.4.0] - 2026-11-06
+
+### Changed
+
+- **Harvey is now Sellbird.** The package, the `sellbird` command,
+  `sellbird.yaml` and `sellbird.local.yaml`, `data/sellbird.db`, `SELLBIRD_*`
+  settings and the Docker service all carry the new name. An existing clone
+  upgrades with `git pull && pip install -e .`. On first run Sellbird moves
+  `harvey.local.yaml` and `data/harvey.*` to the new names. It never
+  overwrites, and waits while a Harvey process is still running.
+  `HARVEY_*` settings still apply. `harvey` and `python -m harvey` keep
+  working for now and say they moved. See "Upgrading from Harvey" in the
+  README. After an upgrade moves files, the dashboard's Today screen says
+  "Harvey is now Sellbird" once, until you dismiss it.
+- **The agent no longer calls itself by the product's name.** The prompts
+  described the model as Harvey ("like Harvey Specter"), and the default and
+  trained sender was Harvey at harvey@your-domain. The default sender is now
+  Alex. Messages saved before the rename still count as ours in reply
+  history.
+- **Logo.** The dashboard shows the Sellbird swallow and favicon.
+- **License: AGPL-3.0.** From 0.4.0 Sellbird is licensed under the GNU
+  Affero General Public License v3.0 only. Releases up to 0.3.x stay MIT, and
+  that code keeps its MIT notice in `NOTICE`. New commits are signed off
+  under the Developer Certificate of Origin (see `CONTRIBUTING.md`).
+- **A shorter README.** The front page covers what Sellbird does, the quick
+  start and upgrading from Harvey. The detailed sections moved unchanged into
+  `docs/`, with a new dashboard recording and screenshots. Added
+  `SECURITY.md`, `CODE_OF_CONDUCT.md`, `SUPPORT.md` and issue and pull
+  request templates.
+
+### Added
+
+- **Company fit and the company register.** The Companies tab now sorts by a
+  0-100 fit score worked out from what Harvey already holds: the ICP sector
   match, a contact with a target title, the best email found, and an open
   role matching `icp.hiring_signals`. Hover a score for the reasons. A Status
   column says what happened to each company (emailed, replied, opted out,
@@ -403,7 +448,7 @@ minor versions can still change behaviour.
   are hidden behind a "Show" button. Sending by hand (Open in Gmail, Mark
   as sent) and campaign feedback work as before, inside the open row.
 - **A rejected email guess gets the other common format.** When the
-  verifier rejects `first.last@`, Harvey verifies `first@` once (and the
+  verifier rejects `first.last@`, Sellbird verifies `first@` once (and the
   reverse) before giving the person up as invalid; only a confirmed mailbox
   replaces the guess. A rejected published address, or a format another
   named person at the company could own, gets no second look. At most one
@@ -497,13 +542,13 @@ minor versions can still change behaviour.
   username / current-password, visible only), the form is sent with Enter
   whatever its button looks like, and a page with no form gives up in 15
   seconds with what to do. The page also carries reCAPTCHA, so a sign-in
-  can still stop at a check: `harvey linkedin login` opens a real browser
-  window to sign in once yourself (any code included), and Harvey keeps
-  that session instead of typing the password. `harvey linkedin` shows
+  can still stop at a check: `sellbird linkedin login` opens a real browser
+  window to sign in once yourself (any code included), and Sellbird keeps
+  that session instead of typing the password. `sellbird linkedin` shows
   until when the session lasts.
 - **A throttled TrulyInbox warmup read as switched off.** When too much
   warmup mail lands in spam, TrulyInbox slows the warmup and reports it as
-  `THROTTLED`. `harvey warmup` said "Warmup isn't on. Turn it on in
+  `THROTTLED`. `sellbird warmup` said "Warmup isn't on. Turn it on in
   TrulyInbox", sending people to a switch that was already on. A throttled
   warmup now counts as running, so the report shows the real problem: the
   share of warmup mail landing in spam.
@@ -512,8 +557,8 @@ minor versions can still change behaviour.
   to stays new and the Writer skips them, but the heartbeat still counted
   them as ready to write. It chose `write_campaign` every cycle, wrote
   nothing, and never went back to finding emails. The count now applies the
-  same cap, in the heartbeat and in `harvey status`.
-- **`harvey warmup` missed DKIM on OVHcloud mailboxes.** OVHcloud publishes
+  same cap, in the heartbeat and in `sellbird status`.
+- **`sellbird warmup` missed DKIM on OVHcloud mailboxes.** OVHcloud publishes
   its keys at `ovhmo-selector-1` and `ovhmo-selector-2`, which weren't among
   the selectors tried, so a signed domain showed "No key at any common
   selector". Both are tried now; `dkim_selector` is no longer needed there.
@@ -545,14 +590,14 @@ minor versions can still change behaviour.
   implying the reader can't do their job.
 
 - **`HIRING_ROLE` from a careers page kept any heading.** Without a job
-  board, Harvey recorded headings such as "Ready to apply?" or a sales role
+  board, Sellbird recorded headings such as "Ready to apply?" or a sales role
   as hiring intent. It now keeps only your `hiring_signals` roles (entities
   decoded) and records 0 when the page lists none.
 
 - **Startup presets on Serper's free tier.** Serper refuses a search with
   operators (`site:`, `after:`) past 10 results on a free key ("Query pattern
   not allowed for free accounts"), so every `funding`, `hiring`, `yc` and
-  `accelerator` search failed at the default depth of 30. Harvey now retries
+  `accelerator` search failed at the default depth of 30. Sellbird now retries
   at 10.
 - **Spanish opt-outs are caught without the model** (from #154). "No,
   gracias", a bare "BAJA", "denme de baja", "no me escriba más", "dejen de

@@ -8,14 +8,14 @@ import tempfile
 import pytest
 import pytest_asyncio
 
-from harvey.agents.writer import OFFER_FIRST_EMAIL, Writer
-from harvey.collectors.discover import business_name, headline_name, site_root
-from harvey.config import WriterConfig, load_config
-from harvey.models.company import Company
-from harvey.models.prospect import Prospect
-from harvey.signals import seed_signal_catalog
-from harvey.startups import hiring_facts
-from harvey.state import StateManager
+from sellbird.agents.writer import OFFER_FIRST_EMAIL, Writer
+from sellbird.collectors.discover import business_name, headline_name, site_root
+from sellbird.config import WriterConfig, load_config
+from sellbird.models.company import Company
+from sellbird.models.prospect import Prospect
+from sellbird.signals import seed_signal_catalog
+from sellbird.startups import hiring_facts
+from sellbird.state import StateManager
 
 
 @pytest_asyncio.fixture

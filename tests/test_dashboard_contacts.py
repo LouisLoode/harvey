@@ -8,9 +8,9 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-import harvey.dashboard as dash
-from harvey.models.prospect import Prospect
-from harvey.state import StateManager
+import sellbird.dashboard as dash
+from sellbird.models.prospect import Prospect
+from sellbird.state import StateManager
 
 PEOPLE = [  # first, last, company, email status, status, score, created
     ("Claire", "Duval", "Lumenhexa", "verified", "new", 82, "2026-10-20 09:00:00"),
@@ -43,7 +43,7 @@ async def _seed(db_path):
 @pytest.fixture
 def client(monkeypatch):
     with tempfile.TemporaryDirectory() as tmp:
-        db = Path(tmp) / "harvey.db"
+        db = Path(tmp) / "sellbird.db"
         monkeypatch.setattr(dash, "DB_PATH", db)
         dash.token_store.configure(Path(tmp) / "data" / "dashboard-token")
         token = dash.token_store.get()

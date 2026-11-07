@@ -1,12 +1,12 @@
-"""Quiet hours on chosen days: Harvey's own work on nights and weekends."""
+"""Quiet hours on chosen days: Sellbird's own work on nights and weekends."""
 
 from datetime import datetime, timedelta
 
 import pytest
 import pytz
 
-from harvey.config import QuietHoursConfig, load_config
-from harvey.main import in_quiet_hours
+from sellbird.config import QuietHoursConfig, load_config
+from sellbird.main import in_quiet_hours
 
 PARIS = pytz.timezone("Europe/Paris")
 
@@ -25,9 +25,9 @@ def at(day: int, hour: int, minute: int = 0):
 def test_weekday_office_hours_only():
     config = _config(start="08:00", end="20:00", days=["mon", "tue", "wed", "thu", "fri"])
     assert in_quiet_hours(config, at(0, 10))          # Monday morning: quiet
-    assert not in_quiet_hours(config, at(0, 21))      # Monday night: Harvey works
-    assert not in_quiet_hours(config, at(5, 10))      # Saturday: Harvey works
-    assert not in_quiet_hours(config, at(6, 15))      # Sunday: Harvey works
+    assert not in_quiet_hours(config, at(0, 21))      # Monday night: Sellbird works
+    assert not in_quiet_hours(config, at(5, 10))      # Saturday: Sellbird works
+    assert not in_quiet_hours(config, at(6, 15))      # Sunday: Sellbird works
 
 
 def test_a_period_crossing_midnight_belongs_to_the_day_it_starts():

@@ -7,10 +7,10 @@ import tempfile
 import pytest
 import pytest_asyncio
 
-from harvey.collectors.discover import business_name, clean_company_name, site_name_from_html
-from harvey.models.company import Company
-from harvey.models.prospect import Prospect
-from harvey.state import StateManager
+from sellbird.collectors.discover import business_name, clean_company_name, site_name_from_html
+from sellbird.models.company import Company
+from sellbird.models.prospect import Prospect
+from sellbird.state import StateManager
 
 
 @pytest.mark.parametrize("name, domain, expected", [

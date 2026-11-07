@@ -3,9 +3,9 @@
 Every person and business here is invented.
 """
 
-from harvey.collectors import people
-from harvey.collectors.profile import ProfileCollector, title_looks_like_role
-from harvey.integrations.email_finder import _clean_name_part, build_email
+from sellbird.collectors import people
+from sellbird.collectors.profile import ProfileCollector, title_looks_like_role
+from sellbird.integrations.email_finder import _clean_name_part, build_email
 
 
 def test_accented_names_are_names():

@@ -7,7 +7,7 @@ import asyncio
 
 import pytest
 
-from harvey.integrations import linkedin as li
+from sellbird.integrations import linkedin as li
 
 LOGIN_PAGE = """<!doctype html><html><body>
 <div style="display:none">
@@ -71,7 +71,7 @@ def test_a_security_check_is_reported_not_retried(monkeypatch, tmp_path):
 def test_a_page_with_no_form_fails_fast(monkeypatch, tmp_path, caplog):
     ok, _ = _run(_login(monkeypatch, tmp_path, "<html><body>Something else</body></html>"))
     assert ok is False
-    assert "harvey linkedin login" in caplog.text
+    assert "sellbird linkedin login" in caplog.text
 
 
 def test_the_session_expiry_is_read_without_its_value(monkeypatch, tmp_path):

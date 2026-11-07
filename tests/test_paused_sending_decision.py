@@ -6,10 +6,10 @@ import tempfile
 import pytest
 import pytest_asyncio
 
-from harvey.agents.sender import KILL_SWITCH_KEY
-from harvey.config import load_config
-from harvey.main import decide_next_action
-from harvey.state import StateManager
+from sellbird.agents.sender import KILL_SWITCH_KEY
+from sellbird.config import load_config
+from sellbird.main import decide_next_action
+from sellbird.state import StateManager
 
 
 @pytest_asyncio.fixture

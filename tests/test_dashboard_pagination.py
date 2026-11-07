@@ -9,8 +9,8 @@ from datetime import datetime, timezone
 import pytest
 from fastapi.testclient import TestClient
 
-import harvey.dashboard as dash
-from harvey.state import HELD_FOR_REVIEW, StateManager
+import sellbird.dashboard as dash
+from sellbird.state import HELD_FOR_REVIEW, StateManager
 
 ORIGIN = "http://127.0.0.1:5555"
 
@@ -18,7 +18,7 @@ ORIGIN = "http://127.0.0.1:5555"
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     (tmp_path / "data").mkdir()
-    db = tmp_path / "data" / "harvey.db"
+    db = tmp_path / "data" / "sellbird.db"
     monkeypatch.setattr(dash, "ENV_FILE", tmp_path / ".env")
     monkeypatch.setattr(dash, "DB_PATH", db)
     dash.token_store.configure(tmp_path / "data" / "dashboard-token")

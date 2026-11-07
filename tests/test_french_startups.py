@@ -10,10 +10,10 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from harvey.collectors import discover as D
-from harvey.collectors.discover import build_queries, is_junk
-from harvey.collectors.profile import _CAREERS_ANCHOR, _CAREERS_SEGMENTS, funding_round
-from harvey.config import ICPConfig
+from sellbird.collectors import discover as D
+from sellbird.collectors.discover import build_queries, is_junk
+from sellbird.collectors.profile import _CAREERS_ANCHOR, _CAREERS_SEGMENTS, funding_round
+from sellbird.config import ICPConfig
 
 
 def _config(languages=None, industries=("fintech",)):

@@ -13,12 +13,12 @@ import httpx
 import pytest
 import pytest_asyncio
 
-from harvey.collectors.ats import parse_feed
-from harvey.collectors.profile import ProfileCollector, stack_matches, tech_leadership
-from harvey.models.company import Company
-from harvey.signals import SIGNAL_CATALOG, seed_signal_catalog
-from harvey.startups import hiring_facts
-from harvey.state import StateManager
+from sellbird.collectors.ats import parse_feed
+from sellbird.collectors.profile import ProfileCollector, stack_matches, tech_leadership
+from sellbird.models.company import Company
+from sellbird.signals import SIGNAL_CATALOG, seed_signal_catalog
+from sellbird.startups import hiring_facts
+from sellbird.state import StateManager
 
 ICP = SimpleNamespace(stack_keywords=["NestJS", "Next.js", "Kafka", "Kubernetes", "MongoDB"])
 HOME = ('<html><body>' + "x" * 600 + '<a href="https://jobs.lever.co/lumenhexa">Jobs</a></body></html>')

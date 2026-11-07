@@ -9,19 +9,19 @@ import pytest
 import pytest_asyncio
 from pydantic import ValidationError
 
-from harvey.agents.scout import Scout
-from harvey.agents.writer import Writer
-from harvey.collectors import discover as D
-from harvey.collectors import profile as profile_mod
-from harvey.collectors.profile import ProfileCollector
-from harvey.config import ICPConfig, load_config
-from harvey.icp_filter import (
+from sellbird.agents.scout import Scout
+from sellbird.agents.writer import Writer
+from sellbird.collectors import discover as D
+from sellbird.collectors import profile as profile_mod
+from sellbird.collectors.profile import ProfileCollector
+from sellbird.config import ICPConfig, load_config
+from sellbird.icp_filter import (
     excluded_by, has_exclusions, kind_excluded, naf_excluded, site_excluded, site_kind,
 )
-from harvey.models.company import Company
-from harvey.models.prospect import Prospect
-from harvey.signals import SIGNAL_CATALOG, seed_signal_catalog
-from harvey.state import StateManager
+from sellbird.models.company import Company
+from sellbird.models.prospect import Prospect
+from sellbird.signals import SIGNAL_CATALOG, seed_signal_catalog
+from sellbird.state import StateManager
 
 ICP = SimpleNamespace(exclude_keywords=["ESN", "cabinet de recrutement", "agence web"],
                       exclude_naf=["78.", "64.30", "62.02A"])

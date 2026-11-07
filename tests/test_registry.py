@@ -15,13 +15,13 @@ import httpx
 import pytest
 import pytest_asyncio
 
-from harvey.agents.scout import Scout, _merge_known_people
-from harvey.collectors import profile as profile_module
-from harvey.collectors import registry as R
-from harvey.collectors.profile import ProfileCollector
-from harvey.models.company import Company
-from harvey.signals import seed_signal_catalog
-from harvey.state import StateManager
+from sellbird.agents.scout import Scout, _merge_known_people
+from sellbird.collectors import profile as profile_module
+from sellbird.collectors import registry as R
+from sellbird.collectors.profile import ProfileCollector
+from sellbird.models.company import Company
+from sellbird.signals import seed_signal_catalog
+from sellbird.state import StateManager
 
 SIREN = "000000018"
 SIEGE = {"siret": SIREN + "00011", "est_siege": True, "adresse": "12 RUE DE L'EXEMPLE 31000 TOULOUSE",

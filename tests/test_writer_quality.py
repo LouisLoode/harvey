@@ -10,16 +10,16 @@ from types import SimpleNamespace
 import pytest
 import pytest_asyncio
 
-from harvey.agents import writer as W
-from harvey.agents.writer import Writer
-from harvey.collectors.discover import clean_industry
-from harvey.collectors.profile import ProfileCollector
-from harvey.config import WriterConfig, load_config
-from harvey.language import company_language
-from harvey.models.company import Company
-from harvey.models.prospect import Prospect
-from harvey.signals import seed_signal_catalog
-from harvey.state import StateManager
+from sellbird.agents import writer as W
+from sellbird.agents.writer import Writer
+from sellbird.collectors.discover import clean_industry
+from sellbird.collectors.profile import ProfileCollector
+from sellbird.config import WriterConfig, load_config
+from sellbird.language import company_language
+from sellbird.models.company import Company
+from sellbird.models.prospect import Prospect
+from sellbird.signals import seed_signal_catalog
+from sellbird.state import StateManager
 
 
 @pytest_asyncio.fixture
